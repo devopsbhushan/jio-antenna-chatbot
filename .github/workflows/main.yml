@@ -27,9 +27,9 @@ jobs:
           mkdir -p layer/python
 
           pip install faiss-cpu==1.7.4 --target layer/python --quiet
-          pip install onnxruntime==1.17.3 --target layer/python --quiet
+          pip install onnxruntime==1.16.3 --target layer/python --quiet
           pip install tokenizers==0.15.2 --target layer/python --quiet
-          pip install numpy==1.26.4 --target layer/python --quiet
+          pip install numpy==1.24.4 --target layer/python --quiet
           pip install requests==2.31.0 --target layer/python --quiet
 
           echo "Raw install complete"
