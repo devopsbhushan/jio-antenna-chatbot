@@ -18,71 +18,52 @@ jobs:
         with:
           python-version: '3.11'
 
-      # ── FIXED: Install packages correctly ────────────────────────────────
-      # Root cause of 5841MB: --platform + --only-binary failed silently,
-      # pip compiled from source. Fix: use Docker-free native install with
-      # explicit lightweight packages only.
-      - name: Install packages into layer folder
+      # ── Install ONLY lightweight packages ───────────────────────────────
+      # sentence-transformers pulls torch + NVIDIA CUDA = 7GB. NOT usable.
+      # Solution: use onnxruntime + huggingface tokenizers directly.
+      # Same MiniLM model, same 384-dim vectors, but ~50MB instead of 7GB.
+      - name: Install lightweight packages
         run: |
           mkdir -p layer/python
 
-          # Install each package separately to catch errors clearly
-          pip install faiss-cpu==1.7.4 \
-            --target layer/python \
-            --quiet
+          pip install faiss-cpu==1.7.4 --target layer/python --quiet
+          pip install onnxruntime==1.17.3 --target layer/python --quiet
+          pip install tokenizers==0.15.2 --target layer/python --quiet
+          pip install numpy==1.26.4 --target layer/python --quiet
+          pip install requests==2.31.0 --target layer/python --quiet
 
-          pip install sentence-transformers==2.2.2 \
-            --target layer/python \
-            --quiet
-
-          pip install numpy==1.26.4 \
-            --target layer/python \
-            --quiet
-
-          echo "Raw install size:"
+          echo "Raw install complete"
           du -sh layer/
 
-      # ── Strip unnecessary files to reduce size ───────────────────────────
-      - name: Strip layer to reduce size
+      # ── Strip unnecessary files ──────────────────────────────────────────
+      - name: Strip layer
         run: |
           cd layer/python
-
-          # Remove test folders
-          find . -type d -name "tests"     -exec rm -rf {} + 2>/dev/null || true
-          find . -type d -name "test"      -exec rm -rf {} + 2>/dev/null || true
-          find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-
-          # Remove compiled Python cache files
-          find . -name "*.pyc"  -delete 2>/dev/null || true
-          find . -name "*.pyo"  -delete 2>/dev/null || true
-
-          # Remove dist-info and egg-info (not needed at runtime)
-          find . -type d -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || true
-          find . -type d -name "*.egg-info"  -exec rm -rf {} + 2>/dev/null || true
-
-          # Remove large unused model data from sentence-transformers
-          find . -type d -name "datasets"   -exec rm -rf {} + 2>/dev/null || true
-
-          # Remove unnecessary binaries
+          find . -type d -name "__pycache__"  -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name "tests"        -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name "test"         -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name "*.dist-info"  -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name "*.egg-info"   -exec rm -rf {} + 2>/dev/null || true
+          find . -name "*.pyc" -delete 2>/dev/null || true
+          find . -name "*.pyo" -delete 2>/dev/null || true
           find . -name "*.exe" -delete 2>/dev/null || true
-
           cd ../..
           echo "After stripping:"
           du -sh layer/
+          echo "Breakdown:"
+          du -sh layer/python/*/ 2>/dev/null | sort -rh | head -15
 
-      # ── Check size ───────────────────────────────────────────────────────
+      # ── Size check ───────────────────────────────────────────────────────
       - name: Check layer size
         run: |
           SIZE=$(du -sm layer/ | cut -f1)
-          echo "Layer size: ${SIZE} MB"
+          echo "Final layer size: ${SIZE} MB"
           if [ "$SIZE" -gt 250 ]; then
-            echo "ERROR: Still too large at ${SIZE}MB. See fix below."
-            echo ""
-            echo "Top 10 largest folders:"
-            du -sh layer/python/*/ 2>/dev/null | sort -rh | head -10
+            echo "ERROR: Layer is ${SIZE}MB"
+            du -sh layer/python/*/ | sort -rh | head -10
             exit 1
           fi
-          echo "Size OK — within 250MB Lambda limit"
+          echo "Size OK"
 
       # ── Zip ─────────────────────────────────────────────────────────────
       - name: Zip layer
@@ -105,7 +86,7 @@ jobs:
         run: |
           aws s3 cp rag_layer.zip \
             s3://${{ secrets.S3_BUCKET }}/layers/rag_layer.zip
-          echo "Uploaded successfully"
+          echo "Uploaded to S3 successfully"
 
       # ── Publish Lambda Layer ─────────────────────────────────────────────
       - name: Publish Lambda Layer
@@ -113,7 +94,7 @@ jobs:
         run: |
           LAYER_ARN=$(aws lambda publish-layer-version \
             --layer-name rag-dependencies \
-            --description 'FAISS + sentence-transformers for RAG chatbot' \
+            --description 'FAISS + ONNX MiniLM embeddings for RAG chatbot' \
             --content S3Bucket=${{ secrets.S3_BUCKET }},S3Key=layers/rag_layer.zip \
             --compatible-runtimes python3.11 \
             --query 'LayerVersionArn' \
@@ -129,7 +110,7 @@ jobs:
           echo "============================================"
           echo "ARN: ${{ steps.publish_layer.outputs.layer_arn }}"
           echo "============================================"
-          echo "Paste this ARN into both Lambda functions:"
+          echo "Next: paste this ARN into both Lambda functions"
           echo "  - build-faiss-index"
           echo "  - antenna-chatbot"
           echo "============================================"
