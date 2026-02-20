@@ -1,0 +1,101 @@
+name: Build RAG Lambda Layer
+
+on:
+  workflow_dispatch:    # Manual trigger — run with a button click
+    inputs:
+      python_version:
+        description: 'Python version'
+        required: false
+        default: '3.11'
+
+jobs:
+  build-and-publish:
+    runs-on: ubuntu-latest    # Free Ubuntu Linux VM
+    timeout-minutes: 30       # Safety limit
+
+    steps:
+
+      # Step A: Check out the repo
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # Step B: Set up Python 3.11 (same as Lambda runtime)
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # Step C: Install packages targeting Amazon Linux x86_64
+      - name: Install Python packages
+        run: |
+          mkdir -p layer/python
+          pip install \
+            faiss-cpu \
+            sentence-transformers \
+            numpy \
+            --target layer/python \
+            --platform manylinux2014_x86_64 \
+            --only-binary=:all: \
+            --python-version 3.11 \
+            --quiet
+          echo 'Packages installed'
+          du -sh layer/
+
+      # Step D: Check size before zipping
+      - name: Check layer size
+        run: |
+          SIZE=$(du -sm layer/ | cut -f1)
+          echo "Layer size: ${SIZE} MB"
+          if [ $SIZE -gt 250 ]; then
+            echo 'ERROR: Layer exceeds 250MB Lambda limit'
+            exit 1
+          fi
+          echo 'Size check passed'
+
+      # Step E: Zip the layer
+      - name: Zip layer
+        run: |
+          cd layer
+          zip -r ../rag_layer.zip python/ -q
+          cd ..
+          ls -lh rag_layer.zip
+          echo 'Zip created successfully'
+
+      # Step F: Configure AWS credentials from GitHub Secrets
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      # Step G: Upload zip to S3
+      - name: Upload to S3
+        run: |
+          aws s3 cp rag_layer.zip \
+            s3://${{ secrets.S3_BUCKET }}/layers/rag_layer.zip
+          echo 'Uploaded to S3'
+
+      # Step H: Publish as Lambda Layer
+      - name: Publish Lambda Layer
+        id: publish_layer
+        run: |
+          LAYER_ARN=$(aws lambda publish-layer-version \
+            --layer-name rag-dependencies \
+            --description 'FAISS + sentence-transformers for RAG chatbot' \
+            --content S3Bucket=${{ secrets.S3_BUCKET }},S3Key=layers/rag_layer.zip \
+            --compatible-runtimes python3.11 \
+            --query 'LayerVersionArn' \
+            --output text)
+          echo "Layer ARN: $LAYER_ARN"
+          echo "layer_arn=$LAYER_ARN" >> $GITHUB_OUTPUT
+
+      # Step I: Print final summary
+      - name: Print Summary
+        run: |
+          echo '================================================'
+          echo 'LAYER BUILD COMPLETE'
+          echo '================================================'
+          echo 'Layer ARN: ${{ steps.publish_layer.outputs.layer_arn }}'
+          echo 'Copy the ARN above and paste into your Lambda functions'
+          echo '================================================'
