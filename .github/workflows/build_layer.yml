@@ -133,37 +133,37 @@ jobs:
       - name: Deploy build-faiss-index
         run: |
           aws lambda update-function-code \
-            --function-name build-faiss-index \
+            --function-name Build_FAISS_Index \
             --s3-bucket ${{ secrets.S3_BUCKET }} \
             --s3-key deployments/build_index_lambda.zip \
             --no-cli-pager
           aws lambda wait function-updated \
-            --function-name build-faiss-index
+            --function-name Build_FAISS_Index
           echo "build-faiss-index deployed and ready"
 
       # ── Deploy chatbot Lambda ─────────────────────────────────────────────
       - name: Deploy antenna-chatbot
         run: |
           aws lambda update-function-code \
-            --function-name antenna-chatbot \
+            --function-name antenna-chatbot_Lambda \
             --s3-bucket ${{ secrets.S3_BUCKET }} \
             --s3-key deployments/chatbot_lambda.zip \
             --no-cli-pager
           aws lambda wait function-updated \
-            --function-name antenna-chatbot
+            --function-name antenna-chatbot_Lambda
           echo "antenna-chatbot deployed and ready"
 
       # ── Remove layers from both Lambdas ───────────────────────────────────
       - name: Remove all layers from both Lambdas
         run: |
           aws lambda update-function-configuration \
-            --function-name build-faiss-index \
+            --function-name Build_FAISS_Index \
             --layers \
             --no-cli-pager 2>/dev/null || \
           echo "No layers to remove from build-faiss-index"
 
           aws lambda update-function-configuration \
-            --function-name antenna-chatbot \
+            --function-name antenna-chatbot_Lambda \
             --layers \
             --no-cli-pager 2>/dev/null || \
           echo "No layers to remove from antenna-chatbot"
@@ -178,6 +178,6 @@ jobs:
           echo "All layers removed. No manual steps needed."
           echo ""
           echo "Test in AWS Console:"
-          echo "  1. build-faiss-index  → Test → {}"
-          echo "  2. antenna-chatbot    → Test → ping event"
+          echo "  1. Build_FAISS_Index       → Test → {}"
+          echo "  2. antenna-chatbot_Lambda  → Test → ping event"
           echo "============================================"
