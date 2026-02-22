@@ -1,0 +1,168 @@
+name: Deploy Lambda Functions
+
+on:
+  workflow_dispatch:
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    container:
+      image: public.ecr.aws/lambda/python:3.11
+    timeout-minutes: 45
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Install packages directly into deployment folder ─────────────────
+      # No layer. Everything bundled inside the Lambda zip itself.
+      # This eliminates all layer attachment and GLIBC mismatch issues.
+      - name: Install packages into package folder
+        run: |
+          mkdir -p package
+
+          pip3 install "numpy==1.24.4"       --target package --quiet
+          pip3 install "faiss-cpu==1.7.4"    --target package --quiet
+          pip3 install "onnxruntime==1.16.3" --target package --quiet
+          pip3 install "tokenizers==0.15.2"  --target package --quiet
+          pip3 install "requests==2.31.0"    --target package --quiet
+
+          echo "Packages installed:"
+          du -sh package/
+          echo "Breakdown:"
+          du -sh package/*/ 2>/dev/null | sort -rh | head -10
+
+      # ── Strip to reduce size ─────────────────────────────────────────────
+      - name: Strip unnecessary files
+        run: |
+          cd package
+          find . -type d -name "__pycache__"  -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name "tests"        -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name "test"         -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name "*.dist-info"  -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name "*.egg-info"   -exec rm -rf {} + 2>/dev/null || true
+          find . -name "*.pyc" -delete 2>/dev/null || true
+          find . -name "*.pyo" -delete 2>/dev/null || true
+          cd ..
+          echo "After strip:"
+          du -sh package/
+
+      # ── Check size ───────────────────────────────────────────────────────
+      - name: Check size
+        run: |
+          SIZE=$(du -sm package/ | cut -f1)
+          echo "Package size: ${SIZE} MB"
+          if [ "$SIZE" -gt 250 ]; then
+            echo "ERROR: ${SIZE}MB too large"
+            du -sh package/*/ | sort -rh | head -10
+            exit 1
+          fi
+          echo "Size OK"
+
+      # ── Copy Lambda handler files into package ───────────────────────────
+      # embedder.py and lambda handlers must be in root of zip
+      - name: Copy handler files into package
+        run: |
+          cp embedder.py           package/
+          cp build_index_lambda.py package/lambda_function.py
+          echo "Index Lambda files ready"
+
+      # ── Zip index Lambda ─────────────────────────────────────────────────
+      - name: Zip index Lambda
+        run: |
+          cd package
+          zip -r ../build_index_lambda.zip . -q
+          cd ..
+          ls -lh build_index_lambda.zip
+
+      # ── Swap handler for chatbot Lambda ──────────────────────────────────
+      - name: Swap handler for chatbot Lambda
+        run: |
+          cp chatbot_lambda.py package/lambda_function.py
+          cd package
+          zip -r ../chatbot_lambda.zip . -q
+          cd ..
+          ls -lh chatbot_lambda.zip
+
+      # ── Configure AWS ────────────────────────────────────────────────────
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region:            ${{ secrets.AWS_REGION }}
+
+      # ── Upload zips to S3 ────────────────────────────────────────────────
+      - name: Upload zips to S3
+        run: |
+          aws s3 cp build_index_lambda.zip \
+            s3://${{ secrets.S3_BUCKET }}/deployments/build_index_lambda.zip
+          aws s3 cp chatbot_lambda.zip \
+            s3://${{ secrets.S3_BUCKET }}/deployments/chatbot_lambda.zip
+          echo "Uploaded both zips to S3"
+
+      # ── Deploy index Lambda directly ─────────────────────────────────────
+      - name: Deploy build-faiss-index Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name build-faiss-index \
+            --s3-bucket ${{ secrets.S3_BUCKET }} \
+            --s3-key deployments/build_index_lambda.zip \
+            --no-cli-pager
+          echo "build-faiss-index deployed"
+
+      # ── Wait for index Lambda update to complete ─────────────────────────
+      - name: Wait for build-faiss-index update
+        run: |
+          aws lambda wait function-updated \
+            --function-name build-faiss-index
+          echo "build-faiss-index ready"
+
+      # ── Deploy chatbot Lambda directly ───────────────────────────────────
+      - name: Deploy antenna-chatbot Lambda
+        run: |
+          aws lambda update-function-code \
+            --function-name antenna-chatbot \
+            --s3-bucket ${{ secrets.S3_BUCKET }} \
+            --s3-key deployments/chatbot_lambda.zip \
+            --no-cli-pager
+          echo "antenna-chatbot deployed"
+
+      # ── Wait for chatbot Lambda update to complete ───────────────────────
+      - name: Wait for antenna-chatbot update
+        run: |
+          aws lambda wait function-updated \
+            --function-name antenna-chatbot
+          echo "antenna-chatbot ready"
+
+      # ── Remove old layer from both Lambdas ───────────────────────────────
+      - name: Remove old layers from both Lambdas
+        run: |
+          aws lambda update-function-configuration \
+            --function-name build-faiss-index \
+            --layers \
+            --no-cli-pager 2>/dev/null || true
+
+          aws lambda update-function-configuration \
+            --function-name antenna-chatbot \
+            --layers \
+            --no-cli-pager 2>/dev/null || true
+
+          echo "Layers removed from both Lambdas"
+
+      # ── Final summary ────────────────────────────────────────────────────
+      - name: Print summary
+        run: |
+          echo "============================================"
+          echo "DEPLOYMENT COMPLETE"
+          echo "============================================"
+          echo "Both Lambda functions deployed with packages"
+          echo "bundled directly — NO layer needed."
+          echo ""
+          echo "No manual steps required in AWS Console."
+          echo ""
+          echo "Test now:"
+          echo "  Lambda → build-faiss-index → Test → {}"
+          echo "  Lambda → antenna-chatbot   → Test → ping"
+          echo "============================================"
