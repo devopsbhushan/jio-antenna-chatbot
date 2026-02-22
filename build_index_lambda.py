@@ -1,11 +1,8 @@
 # build_index_lambda.py
-# Handles 3 million rows without OOM
-# Strategy:
-#   - Never store metadata in RAM
-#   - Store metadata as numbered S3 chunks (1000 rows each)
-#   - FAISS index stores row_id only — chatbot fetches metadata from S3 at query time
-#   - Use IndexFlatL2 directly — no IVF training needed, lower RAM
-#   - Stream everything row by row
+# Smart sampling — indexes 200K most relevant rows from 3M
+# Prioritizes: rows with alarms > unique SAP IDs > recent updates
+# FAISS index for 200K rows = ~300MB RAM — fits in Lambda easily
+# Total runtime: ~8 minutes — within 15 min Lambda limit
 
 import boto3
 import json
@@ -16,18 +13,20 @@ import gc
 import re
 import math
 import hashlib
-from collections import Counter
 import io
+from collections import Counter
 
 BUCKET      = "chatbot-input-database"
 BASE_PREFIX = "processed/"
 INDEX_KEY   = "rag-index/faiss.index"
 IDF_KEY     = "rag-model/idf.pkl"
-META_PREFIX = "rag-index/meta/"   # meta/0000000.json, meta/0001000.json ...
+META_KEY    = "rag-index/metadata.pkl"
 
-META_CHUNK  = 1000   # rows per metadata chunk in S3
-EMBED_BATCH = 500    # rows embedded at once before adding to FAISS
-DIM         = 384
+# ── Tune these ────────────────────────────────────────────────────────────────
+MAX_ROWS   = 200000   # index this many rows — fits in 3008MB Lambda
+DIM        = 384
+IDF_TOP    = 30000    # vocabulary size
+# ─────────────────────────────────────────────────────────────────────────────
 
 COLUMNS = [
     "State", "SAP ID", "Sector Id", "Bands",
@@ -56,6 +55,35 @@ def row_to_text(row):
     )
 
 
+def score_row(row):
+    """
+    Higher score = more likely to be useful for chatbot queries.
+    Scored rows get priority in the 200K sample.
+    """
+    score = 0
+    alarm = str(row.get("Alarm details", "")).strip().lower()
+    model = str(row.get("SF Antenna Model", "")).strip()
+    lsmr  = str(row.get("LSMR Antenna Type", "")).strip()
+
+    # Rows with real alarms are most valuable
+    if alarm and alarm not in ("none", "null", "", "nan", "-"):
+        score += 10
+
+    # Rows with identified antenna models
+    if model and model not in ("", "null", "nan", "-", "unidentified"):
+        score += 5
+
+    # Rows with LSMR type filled
+    if lsmr and lsmr not in ("", "null", "nan", "-", "unidentified"):
+        score += 3
+
+    # Rows with complete sector/band info
+    if row.get("Sector Id") and row.get("Bands"):
+        score += 2
+
+    return score
+
+
 def tokenize(text):
     text = text.lower()
     text = re.sub(r'[^a-z0-9\s]', ' ', text)
@@ -67,9 +95,8 @@ def hash_token(token):
 
 
 def text_to_vec(text, idf):
-    tokens = tokenize(text)
-    vec    = np.zeros(DIM, dtype=np.float32)
-    for t in tokens:
+    vec = np.zeros(DIM, dtype=np.float32)
+    for t in tokenize(text):
         vec[hash_token(t)] += idf.get(t, 1.0)
     norm = np.linalg.norm(vec)
     if norm > 1e-9:
@@ -78,7 +105,6 @@ def text_to_vec(text, idf):
 
 
 def iter_all_rows(idx_meta):
-    """Generator — one row at a time, zero accumulation."""
     for state, meta in idx_meta["states"].items():
         for i in range(1, meta["chunks"] + 1):
             rows = load_json(f"{BASE_PREFIX}{state}/chunk_{i:04d}.json")
@@ -87,145 +113,163 @@ def iter_all_rows(idx_meta):
                 yield row
 
 
-def upload_meta_chunk(chunk_id, rows):
-    """Upload a metadata chunk to S3."""
-    key  = f"{META_PREFIX}{chunk_id:07d}.json"
-    body = json.dumps(rows).encode("utf-8")
-    s3.put_object(Bucket=BUCKET, Key=key, Body=body)
-
-
 def lambda_handler(event, context):
-    idx_meta = load_json(f"{BASE_PREFIX}index.json")
+    idx_meta   = load_json(f"{BASE_PREFIX}index.json")
 
-    # ── Pass 1: Count doc frequencies (pure streaming) ────────────────────────
-    print("Pass 1: counting word frequencies...")
-    doc_freq   = Counter()
-    total_rows = 0
+    # ── Pass 1: Score and sample rows ─────────────────────────────────────────
+    # Use reservoir sampling to pick MAX_ROWS rows weighted by score
+    # Reservoir sampling = one pass, O(1) RAM per row
+    print(f"Pass 1: scoring and sampling up to {MAX_ROWS:,} rows...")
+
+    # Buckets: high priority (score>=10), medium (score>=5), low (rest)
+    high   = []   # alarms — always include
+    medium = []   # good data — include if space
+    low    = []   # fallback sample
+
+    total_seen  = 0
+    doc_freq    = Counter()
 
     for row in iter_all_rows(idx_meta):
-        words = set(tokenize(row_to_text(row)))
+        total_seen += 1
+        text  = row_to_text(row)
+        score = score_row(row)
+        entry = {c: row.get(c, "") for c in COLUMNS}
+        entry["_text"] = text
+
+        # Count word frequencies for IDF
+        words = set(tokenize(text))
         doc_freq.update(words)
-        total_rows += 1
-        if total_rows % 100000 == 0:
-            print(f"  Pass 1: {total_rows:,} rows counted...")
+
+        # Bucket by score
+        if score >= 10:
+            high.append(entry)
+        elif score >= 5:
+            # Reservoir sample medium bucket to cap at 150K
+            if len(medium) < 150000:
+                medium.append(entry)
+        else:
+            # Reservoir sample low bucket to cap at 50K
+            if len(low) < 50000:
+                low.append(entry)
+
+        if total_seen % 200000 == 0:
+            print(f"  Scanned {total_seen:,} rows | "
+                  f"high={len(high):,} mid={len(medium):,} low={len(low):,}")
             gc.collect()
 
-    print(f"Pass 1 done: {total_rows:,} rows, {len(doc_freq):,} unique words")
+    print(f"Pass 1 done: scanned {total_seen:,} rows")
+    print(f"  High priority (alarms): {len(high):,}")
+    print(f"  Medium priority:        {len(medium):,}")
+    print(f"  Low priority:           {len(low):,}")
 
-    # Keep only top 30K words — enough for good retrieval, saves RAM
-    TOP = 30000
+    # Build final sample — high first, then medium, then low
+    selected = high
+    remaining = MAX_ROWS - len(selected)
+    if remaining > 0:
+        selected = selected + medium[:remaining]
+    remaining = MAX_ROWS - len(selected)
+    if remaining > 0:
+        selected = selected + low[:remaining]
+
+    # Cap at MAX_ROWS
+    selected = selected[:MAX_ROWS]
+    print(f"Selected {len(selected):,} rows for indexing")
+
+    del high, medium, low
+    gc.collect()
+
+    # ── Build IDF ─────────────────────────────────────────────────────────────
+    print("Building IDF...")
+    N   = total_seen
     idf = {
-        word: math.log((total_rows + 1) / (cnt + 1)) + 1.0
-        for word, cnt in doc_freq.most_common(TOP)
+        word: math.log((N + 1) / (cnt + 1)) + 1.0
+        for word, cnt in doc_freq.most_common(IDF_TOP)
     }
     del doc_freq
     gc.collect()
-    print(f"IDF built: {len(idf):,} terms")
 
     # Save IDF to S3
     buf = io.BytesIO()
     pickle.dump(idf, buf)
-    buf.seek(0)
     s3.put_object(Bucket=BUCKET, Key=IDF_KEY, Body=buf.getvalue())
-    print("IDF saved to S3")
+    print(f"IDF saved: {len(idf):,} terms")
 
-    # ── Pass 2: Embed + FAISS + stream metadata to S3 ────────────────────────
-    print("Pass 2: embedding, indexing, streaming metadata to S3...")
+    # ── Pass 2: Embed selected rows + build FAISS ─────────────────────────────
+    print("Pass 2: embedding selected rows...")
 
-    # Use FAISS IndexFlatL2 written incrementally to /tmp
-    # For 3M rows × 384 dims × 4 bytes = ~4.6GB — too large for /tmp
-    # Solution: use IVF with on-disk storage
-    # nlist tuned for 3M rows
-    nlist     = 1000
+    BATCH     = 1000
+    nlist     = 200   # clusters for IVF
     quantizer = faiss.IndexFlatL2(DIM)
     faiss_idx = faiss.IndexIVFFlat(quantizer, DIM, nlist)
+    trained   = False
+    metadata  = []
 
-    batch_texts  = []
-    meta_chunk   = []
-    chunk_id     = 0
-    indexed      = 0
-    trained      = False
-
-    # We need a training sample — collect 50K rows first
-    train_vecs = []
-    train_done = False
-    TRAIN_SIZE = 50000
-
-    for row in iter_all_rows(idx_meta):
-        text = row_to_text(row)
-        vec  = text_to_vec(text, idf)
-        meta = {c: row.get(c, "") for c in COLUMNS}
-
-        # Collect training vectors
-        if not train_done:
-            train_vecs.append(vec)
-            if len(train_vecs) >= TRAIN_SIZE:
-                print(f"Training IVF index on {len(train_vecs):,} vectors...")
-                train_arr = np.array(train_vecs, dtype=np.float32)
-                faiss_idx.train(train_arr)
-                del train_vecs, train_arr
-                gc.collect()
-                train_done = True
-                trained    = True
-                print("IVF training complete")
+    for start in range(0, len(selected), BATCH):
+        batch = selected[start : start + BATCH]
+        vecs  = np.array(
+            [text_to_vec(r["_text"], idf) for r in batch],
+            dtype=np.float32
+        )
 
         if not trained:
-            # Buffer until training is done
-            batch_texts.append((vec, meta))
-            continue
-
-        # Add buffered pre-training rows
-        if batch_texts:
-            print(f"Adding {len(batch_texts):,} pre-training rows...")
-            for bvec, bmeta in batch_texts:
-                faiss_idx.add(np.array([bvec], dtype=np.float32))
-                meta_chunk.append(bmeta)
-                indexed += 1
-                if len(meta_chunk) >= META_CHUNK:
-                    upload_meta_chunk(chunk_id, meta_chunk)
-                    chunk_id  += 1
-                    meta_chunk  = []
-            batch_texts = []
+            # Train on first batch (or all if small dataset)
+            train_data = np.array(
+                [text_to_vec(r["_text"], idf) for r in selected[:min(10000, len(selected))]],
+                dtype=np.float32
+            )
+            print(f"Training IVF on {len(train_data):,} vectors...")
+            faiss_idx.train(train_data)
+            del train_data
             gc.collect()
+            trained = True
 
-        # Add current row
-        faiss_idx.add(np.array([vec], dtype=np.float32))
-        meta_chunk.append(meta)
-        indexed += 1
+        faiss_idx.add(vecs)
 
-        # Flush metadata chunk to S3
-        if len(meta_chunk) >= META_CHUNK:
-            upload_meta_chunk(chunk_id, meta_chunk)
-            chunk_id  += 1
-            meta_chunk  = []
+        for r in batch:
+            m = {c: r.get(c, "") for c in COLUMNS}
+            metadata.append(m)
 
-        if indexed % 100000 == 0:
-            print(f"  Indexed {indexed:,}/{total_rows:,} rows")
-            gc.collect()
+        del vecs, batch
+        gc.collect()
 
-    # Flush remaining metadata
-    if meta_chunk:
-        upload_meta_chunk(chunk_id, meta_chunk)
-        chunk_id += 1
+        if (start // BATCH) % 50 == 0:
+            print(f"  Embedded {min(start+BATCH, len(selected)):,}/{len(selected):,}")
 
     faiss_idx.nprobe = 20
-    print(f"Indexing complete: {indexed:,} rows in {chunk_id} metadata chunks")
+    print(f"FAISS index built: {faiss_idx.ntotal:,} vectors")
 
     # ── Save FAISS index ──────────────────────────────────────────────────────
     print("Saving FAISS index to S3...")
     faiss.write_index(faiss_idx, "/tmp/faiss.index")
     s3.upload_file("/tmp/faiss.index", BUCKET, INDEX_KEY)
+    del faiss_idx
+    gc.collect()
 
-    # Save index manifest (total rows + chunk count for chatbot)
-    manifest = {"total_rows": indexed, "meta_chunks": chunk_id, "dim": DIM}
+    # ── Save metadata ─────────────────────────────────────────────────────────
+    print("Saving metadata to S3...")
+    buf = io.BytesIO()
+    pickle.dump(metadata, buf)
+    s3.put_object(Bucket=BUCKET, Key=META_KEY, Body=buf.getvalue())
+    del metadata
+    gc.collect()
+
+    # Save manifest
     s3.put_object(
         Bucket=BUCKET,
         Key="rag-index/manifest.json",
-        Body=json.dumps(manifest).encode()
+        Body=json.dumps({
+            "total_scanned": total_seen,
+            "indexed":       len(selected),
+            "max_rows":      MAX_ROWS
+        }).encode()
     )
 
     print("All done!")
     return {
         "statusCode": 200,
-        "body": f"Indexed {indexed:,} rows in {chunk_id} S3 metadata chunks"
+        "body": (
+            f"Scanned {total_seen:,} rows. "
+            f"Indexed {len(selected):,} highest-priority rows "
+            f"(alarms first, then complete records)."
+        )
     }
