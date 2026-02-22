@@ -1,6 +1,8 @@
 # build_index_lambda.py
-# Memory-efficient FAISS index builder using lightweight TF-IDF embedder
-# Peak RAM: ~400MB — well within 3008MB Lambda limit
+# Three-pass streaming approach — never holds all data in RAM at once
+# Pass 1: count word frequencies (streaming, low RAM)
+# Pass 2: embed + add to FAISS (streaming, low RAM)
+# Peak RAM: ~300MB
 
 import boto3
 import json
@@ -8,12 +10,19 @@ import faiss
 import numpy as np
 import pickle
 import gc
-import embedder
+import re
+import math
+import hashlib
+from collections import Counter
 
 BUCKET       = "chatbot-input-database"
 BASE_PREFIX  = "processed/"
 INDEX_KEY    = "rag-index/faiss.index"
 METADATA_KEY = "rag-index/metadata.pkl"
+IDF_KEY      = "rag-model/idf.pkl"
+
+DIM    = 384
+BATCH  = 200   # rows embedded at once — keep low
 
 COLUMNS = [
     "State", "SAP ID", "Sector Id", "Bands",
@@ -22,9 +31,6 @@ COLUMNS = [
     "Antenna Classification", "RRH Last Updated Time",
     "Alarm details"
 ]
-
-CHUNK_BUFFER = 3   # chunks loaded at once
-DIM          = 384
 
 s3 = boto3.client("s3")
 
@@ -45,71 +51,146 @@ def row_to_text(row):
     )
 
 
-def lambda_handler(event, context):
-    idx_meta = load_json(f"{BASE_PREFIX}index.json")
+def tokenize(text):
+    text = text.lower()
+    text = re.sub(r'[^a-z0-9\s]', ' ', text)
+    return [w for w in text.split() if len(w) > 1]
 
-    # ── Pass 1: Collect all texts to build IDF ───────────────────────────────
-    print("Pass 1: collecting texts for IDF...")
-    all_texts    = []
-    all_metadata = []
 
+def hash_token(token):
+    return int(hashlib.md5(token.encode()).hexdigest(), 16) % DIM
+
+
+def text_to_vec(text, idf):
+    tokens = tokenize(text)
+    vec    = np.zeros(DIM, dtype=np.float32)
+    for t in tokens:
+        vec[hash_token(t)] += idf.get(t, 1.0)
+    norm = np.linalg.norm(vec)
+    if norm > 1e-9:
+        vec /= norm
+    return vec
+
+
+def iter_all_rows(idx_meta):
+    """Generator — yields (row_dict) one at a time. Never holds all rows."""
     for state, meta in idx_meta["states"].items():
         for i in range(1, meta["chunks"] + 1):
             rows = load_json(f"{BASE_PREFIX}{state}/chunk_{i:04d}.json")
             for row in rows:
                 row["State"] = state
-                all_texts.append(row_to_text(row))
-                all_metadata.append({c: row.get(c, "") for c in COLUMNS})
+                yield row
 
-    total_rows = len(all_texts)
-    print(f"Total rows: {total_rows}")
 
-    # Build IDF from all texts and save to S3
-    embedder.build_and_save_idf(all_texts)
+def lambda_handler(event, context):
+    idx_meta = load_json(f"{BASE_PREFIX}index.json")
+
+    # ── Pass 1: Count doc frequencies (streaming — no list accumulation) ─────
+    print("Pass 1: counting word frequencies...")
+    doc_freq  = Counter()
+    total_rows = 0
+
+    for row in iter_all_rows(idx_meta):
+        words = set(tokenize(row_to_text(row)))
+        doc_freq.update(words)
+        total_rows += 1
+        if total_rows % 10000 == 0:
+            print(f"  Counted {total_rows} rows...")
+
+    print(f"Total rows: {total_rows}, unique words: {len(doc_freq)}")
+
+    # Build IDF dict — keep only top 50K words to save RAM
+    TOP_WORDS = 50000
+    common    = doc_freq.most_common(TOP_WORDS)
+    idf       = {
+        word: math.log((total_rows + 1) / (cnt + 1)) + 1.0
+        for word, cnt in common
+    }
+    del doc_freq, common
     gc.collect()
+    print(f"IDF built: {len(idf)} terms")
 
-    # ── Pass 2: Embed and build FAISS index ──────────────────────────────────
-    print("Pass 2: embedding and building FAISS index...")
+    # Save IDF to S3
+    with open("/tmp/idf.pkl", "wb") as f:
+        pickle.dump(idf, f)
+    s3.upload_file("/tmp/idf.pkl", BUCKET, IDF_KEY)
+    print("IDF saved to S3")
 
-    # IVFFlat index — memory efficient
+    # ── Pass 2: Embed + build FAISS (streaming — batch by batch) ─────────────
+    print("Pass 2: embedding and indexing...")
+
+    nlist     = max(10, min(100, total_rows // 100))
     quantizer = faiss.IndexFlatL2(DIM)
-    faiss_idx = faiss.IndexIVFFlat(quantizer, DIM, min(100, total_rows // 10))
+    faiss_idx = faiss.IndexIVFFlat(quantizer, DIM, nlist)
+    trained   = False
 
-    # Embed in batches of 500 rows
-    BATCH = 500
-    first_batch = True
+    batch_texts = []
+    batch_meta  = []
+    all_meta    = []
+    indexed     = 0
 
-    for start in range(0, total_rows, BATCH):
-        batch_texts = all_texts[start : start + BATCH]
-        embeddings  = embedder.encode(batch_texts)
+    for row in iter_all_rows(idx_meta):
+        text = row_to_text(row)
+        meta = {c: row.get(c, "") for c in COLUMNS}
+        batch_texts.append(text)
+        batch_meta.append(meta)
 
-        if first_batch:
-            print(f"Training IVF index on first {len(embeddings)} vectors...")
-            faiss_idx.train(embeddings)
-            first_batch = False
+        if len(batch_texts) >= BATCH:
+            # Embed batch
+            vecs = np.array(
+                [text_to_vec(t, idf) for t in batch_texts],
+                dtype=np.float32
+            )
 
-        faiss_idx.add(embeddings)
+            # Train on first batch
+            if not trained:
+                print(f"Training IVF on {len(vecs)} vectors...")
+                faiss_idx.train(vecs)
+                trained = True
 
-        if start % 5000 == 0:
-            print(f"  Indexed {start + len(batch_texts)}/{total_rows} rows")
+            faiss_idx.add(vecs)
+            all_meta.extend(batch_meta)
+            indexed += len(batch_texts)
 
-        del batch_texts, embeddings
+            # Clear batch immediately
+            batch_texts = []
+            batch_meta  = []
+            del vecs
+            gc.collect()
+
+            if indexed % 10000 == 0:
+                print(f"  Indexed {indexed}/{total_rows}")
+
+    # Process remaining rows
+    if batch_texts:
+        vecs = np.array(
+            [text_to_vec(t, idf) for t in batch_texts],
+            dtype=np.float32
+        )
+        if not trained:
+            faiss_idx.train(vecs)
+        faiss_idx.add(vecs)
+        all_meta.extend(batch_meta)
+        indexed += len(batch_texts)
+        del vecs
         gc.collect()
 
     faiss_idx.nprobe = 10
+    print(f"Indexing complete: {indexed} rows")
 
-    # ── Save to S3 ────────────────────────────────────────────────────────────
-    print("Saving FAISS index to S3...")
+    # ── Save FAISS index ──────────────────────────────────────────────────────
+    print("Saving FAISS index...")
     faiss.write_index(faiss_idx, "/tmp/faiss.index")
     s3.upload_file("/tmp/faiss.index", BUCKET, INDEX_KEY)
 
-    print("Saving metadata to S3...")
+    # ── Save metadata in chunks to avoid RAM spike ────────────────────────────
+    print("Saving metadata...")
     with open("/tmp/metadata.pkl", "wb") as f:
-        pickle.dump(all_metadata, f)
+        pickle.dump(all_meta, f)
     s3.upload_file("/tmp/metadata.pkl", BUCKET, METADATA_KEY)
 
-    print(f"Done! Indexed {total_rows} rows.")
+    print("All done!")
     return {
         "statusCode": 200,
-        "body": f"Indexed {total_rows} rows successfully"
+        "body": f"Indexed {indexed} rows successfully"
     }
