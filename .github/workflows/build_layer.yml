@@ -18,101 +18,153 @@ jobs:
         with:
           python-version: '3.11'
 
-      # ── Download numpy wheel that works on Lambda GLIBC 2.17 ─────────────
-      # numpy 1.24.4 manylinux2014 wheel is compiled against GLIBC 2.17
-      # We download it directly from PyPI instead of letting pip pick
-      # a newer incompatible wheel automatically
-      - name: Download compatible numpy wheel directly
+      # ── Download ALL wheels with correct platform tag ─────────────────────
+      # Force manylinux2014 for every package — guarantees GLIBC 2.17 compat
+      - name: Download all wheels with correct platform
         run: |
-          mkdir -p package
+          mkdir -p /tmp/wheels
 
-          # Download numpy 1.24.4 manylinux2014 wheel directly from PyPI
-          # manylinux2014 = compiled for GLIBC 2.17 = works on Lambda
           pip download "numpy==1.24.4" \
             --dest /tmp/wheels \
             --only-binary=:all: \
             --python-version 3.11 \
-            --platform manylinux2014_x86_64
+            --platform manylinux2014_x86_64 \
+            --no-deps
+
+          pip download "faiss-cpu==1.7.4" \
+            --dest /tmp/wheels \
+            --only-binary=:all: \
+            --python-version 3.11 \
+            --platform manylinux2014_x86_64 \
+            --no-deps
+
+          pip download "onnxruntime==1.16.3" \
+            --dest /tmp/wheels \
+            --only-binary=:all: \
+            --python-version 3.11 \
+            --platform manylinux2014_x86_64 \
+            --no-deps
+
+          pip download "tokenizers==0.15.2" \
+            --dest /tmp/wheels \
+            --only-binary=:all: \
+            --python-version 3.11 \
+            --platform manylinux2014_x86_64 \
+            --no-deps
+
+          pip download "requests==2.31.0" \
+            --dest /tmp/wheels \
+            --only-binary=:all: \
+            --python-version 3.11 \
+            --platform manylinux2014_x86_64 \
+            --no-deps
+
+          # Download dependencies of the above packages
+          pip download "certifi" "charset-normalizer" "idna" "urllib3" \
+            "flatbuffers" "packaging" "protobuf" "sympy" "coloredlogs" \
+            "humanfriendly" "mpmath" \
+            --dest /tmp/wheels \
+            --only-binary=:all: \
+            --python-version 3.11 \
+            --platform manylinux2014_x86_64 2>/dev/null || true
 
           echo "Downloaded wheels:"
           ls -lh /tmp/wheels/
 
-          # Verify it is the manylinux2014 wheel (not manylinux_2_27)
-          ls /tmp/wheels/ | grep numpy
-
-      - name: Install numpy from downloaded wheel
+      # ── Layer 1: numpy + faiss (~150MB) ───────────────────────────────────
+      - name: Build Layer 1 — numpy and faiss
         run: |
-          # Install the specific manylinux2014 numpy wheel we downloaded
-          pip install /tmp/wheels/numpy*.whl --target package --quiet
-          echo "numpy installed:"
-          ls package/ | grep numpy
+          mkdir -p layer1/python
 
-      - name: Install remaining packages
-        run: |
-          pip install "faiss-cpu==1.7.4"    --target package --quiet
-          pip install "onnxruntime==1.16.3" --target package --quiet
-          pip install "tokenizers==0.15.2"  --target package --quiet
-          pip install "requests==2.31.0"    --target package --quiet
-          echo "All packages installed"
-          du -sh package/
+          pip install /tmp/wheels/numpy*.whl      --target layer1/python --no-deps --quiet
+          pip install /tmp/wheels/faiss_cpu*.whl  --target layer1/python --no-deps --quiet || \
+          pip install /tmp/wheels/faiss*.whl      --target layer1/python --no-deps --quiet
 
-      - name: Verify numpy GLIBC requirement
-        run: |
-          # Check which GLIBC version the installed numpy actually needs
-          NUMPY_SO=$(find package/ -name "_multiarray_umath*.so" | head -1)
-          echo "Numpy binary: $NUMPY_SO"
-          objdump -T "$NUMPY_SO" 2>/dev/null | grep GLIBC | \
-            grep -oP 'GLIBC_[0-9.]+' | sort -V | tail -5 || true
-          # Should show max GLIBC_2.17 — if it shows 2.27+ something went wrong
-          echo "If max above is 2.17 or lower — numpy is Lambda-compatible"
-
-      - name: Strip unnecessary files
-        run: |
-          cd package
-          find . -type d -name "__pycache__"  -exec rm -rf {} + 2>/dev/null || true
-          find . -type d -name "tests"        -exec rm -rf {} + 2>/dev/null || true
-          find . -type d -name "test"         -exec rm -rf {} + 2>/dev/null || true
-          find . -type d -name "*.dist-info"  -exec rm -rf {} + 2>/dev/null || true
-          find . -type d -name "*.egg-info"   -exec rm -rf {} + 2>/dev/null || true
+          # Strip
+          cd layer1/python
+          find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || true
           find . -name "*.pyc" -delete 2>/dev/null || true
-          find . -name "*.pyo" -delete 2>/dev/null || true
-          cd ..
-          echo "After stripping:"
-          du -sh package/
-          echo "Top folders:"
-          du -sh package/*/ 2>/dev/null | sort -rh | head -10
+          cd ../..
 
-      - name: Check total size
+          echo "Layer 1 size:"
+          du -sh layer1/
+
+          cd layer1
+          zip -r ../layer1.zip python/ -q
+          cd ..
+          ls -lh layer1.zip
+
+      # ── Layer 2: onnxruntime + tokenizers + requests (~80MB) ─────────────
+      - name: Build Layer 2 — onnxruntime and tokenizers
         run: |
-          SIZE=$(du -sm package/ | cut -f1)
-          echo "Package size: ${SIZE} MB"
-          if [ "$SIZE" -gt 250 ]; then
-            echo "ERROR: ${SIZE}MB too large"
-            du -sh package/*/ | sort -rh | head -10
+          mkdir -p layer2/python
+
+          # Install onnxruntime and all its deps
+          for whl in /tmp/wheels/*.whl; do
+            name=$(basename "$whl")
+            # Skip numpy and faiss — already in layer1
+            if echo "$name" | grep -qiE "^(numpy|faiss)"; then
+              continue
+            fi
+            pip install "$whl" --target layer2/python --no-deps --quiet 2>/dev/null || true
+          done
+
+          # Strip
+          cd layer2/python
+          find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
+          find . -type d -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || true
+          find . -name "*.pyc" -delete 2>/dev/null || true
+          cd ../..
+
+          echo "Layer 2 size:"
+          du -sh layer2/
+
+          cd layer2
+          zip -r ../layer2.zip python/ -q
+          cd ..
+          ls -lh layer2.zip
+
+      # ── Check both layer sizes ────────────────────────────────────────────
+      - name: Check layer sizes
+        run: |
+          S1=$(du -sm layer1/ | cut -f1)
+          S2=$(du -sm layer2/ | cut -f1)
+          echo "Layer 1 (numpy+faiss):         ${S1} MB"
+          echo "Layer 2 (onnxruntime+rest):    ${S2} MB"
+          echo "Layer 1 breakdown:"
+          du -sh layer1/python/*/ 2>/dev/null | sort -rh | head -5
+          echo "Layer 2 breakdown:"
+          du -sh layer2/python/*/ 2>/dev/null | sort -rh | head -5
+          if [ "$S1" -gt 250 ] || [ "$S2" -gt 250 ]; then
+            echo "ERROR: A layer exceeds 250MB"
             exit 1
           fi
-          echo "Size OK — within 250MB Lambda limit"
+          echo "Both layers OK"
 
-      # ── Build index Lambda zip ────────────────────────────────────────────
-      - name: Build index Lambda zip
+      # ── Build handler zip (code only, no packages) ────────────────────────
+      - name: Build handler zips
         run: |
-          cp embedder.py           package/
-          cp build_index_lambda.py package/lambda_function.py
-          cd package
+          # Index Lambda — just the handler files, no packages
+          mkdir -p handler_index
+          cp embedder.py           handler_index/
+          cp build_index_lambda.py handler_index/lambda_function.py
+          cd handler_index
           zip -r ../build_index_lambda.zip . -q
           cd ..
-          ls -lh build_index_lambda.zip
 
-      # ── Build chatbot Lambda zip ──────────────────────────────────────────
-      - name: Build chatbot Lambda zip
-        run: |
-          cp chatbot_lambda.py package/lambda_function.py
-          cd package
+          # Chatbot Lambda — just the handler files
+          mkdir -p handler_chatbot
+          cp embedder.py        handler_chatbot/
+          cp chatbot_lambda.py  handler_chatbot/lambda_function.py
+          cd handler_chatbot
           zip -r ../chatbot_lambda.zip . -q
           cd ..
-          ls -lh chatbot_lambda.zip
 
-      # ── AWS credentials ───────────────────────────────────────────────────
+          echo "Handler zip sizes (should be tiny — just Python files):"
+          ls -lh build_index_lambda.zip chatbot_lambda.zip
+
+      # ── Configure AWS ─────────────────────────────────────────────────────
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -120,17 +172,45 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      # ── Upload to S3 ──────────────────────────────────────────────────────
-      - name: Upload zips to S3
+      # ── Upload everything to S3 ───────────────────────────────────────────
+      - name: Upload to S3
         run: |
-          aws s3 cp build_index_lambda.zip \
-            s3://${{ secrets.S3_BUCKET }}/deployments/build_index_lambda.zip
-          aws s3 cp chatbot_lambda.zip \
-            s3://${{ secrets.S3_BUCKET }}/deployments/chatbot_lambda.zip
-          echo "Both zips uploaded to S3"
+          aws s3 cp layer1.zip              s3://${{ secrets.S3_BUCKET }}/deployments/layer1.zip
+          aws s3 cp layer2.zip              s3://${{ secrets.S3_BUCKET }}/deployments/layer2.zip
+          aws s3 cp build_index_lambda.zip  s3://${{ secrets.S3_BUCKET }}/deployments/build_index_lambda.zip
+          aws s3 cp chatbot_lambda.zip      s3://${{ secrets.S3_BUCKET }}/deployments/chatbot_lambda.zip
+          echo "All files uploaded to S3"
 
-      # ── Deploy index Lambda ───────────────────────────────────────────────
-      - name: Deploy build-faiss-index
+      # ── Publish Layer 1 ───────────────────────────────────────────────────
+      - name: Publish Layer 1 — numpy and faiss
+        id: layer1
+        run: |
+          ARN=$(aws lambda publish-layer-version \
+            --layer-name rag-numpy-faiss \
+            --description 'numpy 1.24.4 + faiss-cpu 1.7.4 manylinux2014' \
+            --content S3Bucket=${{ secrets.S3_BUCKET }},S3Key=deployments/layer1.zip \
+            --compatible-runtimes python3.11 \
+            --query 'LayerVersionArn' \
+            --output text)
+          echo "arn=$ARN" >> $GITHUB_OUTPUT
+          echo "Layer 1 ARN: $ARN"
+
+      # ── Publish Layer 2 ───────────────────────────────────────────────────
+      - name: Publish Layer 2 — onnxruntime and tokenizers
+        id: layer2
+        run: |
+          ARN=$(aws lambda publish-layer-version \
+            --layer-name rag-onnx-tokenizers \
+            --description 'onnxruntime 1.16.3 + tokenizers + requests manylinux2014' \
+            --content S3Bucket=${{ secrets.S3_BUCKET }},S3Key=deployments/layer2.zip \
+            --compatible-runtimes python3.11 \
+            --query 'LayerVersionArn' \
+            --output text)
+          echo "arn=$ARN" >> $GITHUB_OUTPUT
+          echo "Layer 2 ARN: $ARN"
+
+      # ── Deploy Build_FAISS_Index with both layers ─────────────────────────
+      - name: Deploy Build_FAISS_Index
         run: |
           aws lambda update-function-code \
             --function-name Build_FAISS_Index \
@@ -139,10 +219,18 @@ jobs:
             --no-cli-pager
           aws lambda wait function-updated \
             --function-name Build_FAISS_Index
-          echo "build-faiss-index deployed and ready"
+          aws lambda update-function-configuration \
+            --function-name Build_FAISS_Index \
+            --layers \
+              ${{ steps.layer1.outputs.arn }} \
+              ${{ steps.layer2.outputs.arn }} \
+            --no-cli-pager
+          aws lambda wait function-updated \
+            --function-name Build_FAISS_Index
+          echo "Build_FAISS_Index deployed with both layers"
 
-      # ── Deploy chatbot Lambda ─────────────────────────────────────────────
-      - name: Deploy antenna-chatbot
+      # ── Deploy antenna-chatbot_Lambda with both layers ────────────────────
+      - name: Deploy antenna-chatbot_Lambda
         run: |
           aws lambda update-function-code \
             --function-name antenna-chatbot_Lambda \
@@ -151,33 +239,29 @@ jobs:
             --no-cli-pager
           aws lambda wait function-updated \
             --function-name antenna-chatbot_Lambda
-          echo "antenna-chatbot deployed and ready"
-
-      # ── Remove layers from both Lambdas ───────────────────────────────────
-      - name: Remove all layers from both Lambdas
-        run: |
-          aws lambda update-function-configuration \
-            --function-name Build_FAISS_Index \
-            --layers \
-            --no-cli-pager 2>/dev/null || \
-          echo "No layers to remove from build-faiss-index"
-
           aws lambda update-function-configuration \
             --function-name antenna-chatbot_Lambda \
             --layers \
-            --no-cli-pager 2>/dev/null || \
-          echo "No layers to remove from antenna-chatbot"
+              ${{ steps.layer1.outputs.arn }} \
+              ${{ steps.layer2.outputs.arn }} \
+            --no-cli-pager
+          aws lambda wait function-updated \
+            --function-name antenna-chatbot_Lambda
+          echo "antenna-chatbot_Lambda deployed with both layers"
 
-      # ── Print summary ─────────────────────────────────────────────────────
+      # ── Summary ───────────────────────────────────────────────────────────
       - name: Print summary
         run: |
-          echo "============================================"
+          echo "================================================"
           echo "DEPLOYMENT COMPLETE"
-          echo "============================================"
-          echo "Both Lambdas deployed with bundled packages."
-          echo "All layers removed. No manual steps needed."
+          echo "================================================"
+          echo "Layer 1 ARN: ${{ steps.layer1.outputs.arn }}"
+          echo "Layer 2 ARN: ${{ steps.layer2.outputs.arn }}"
           echo ""
-          echo "Test in AWS Console:"
-          echo "  1. Build_FAISS_Index       → Test → {}"
-          echo "  2. antenna-chatbot_Lambda  → Test → ping event"
-          echo "============================================"
+          echo "Both layers attached to both Lambda functions."
+          echo "Handler code deployed to both Lambda functions."
+          echo ""
+          echo "Test order:"
+          echo "  1. Build_FAISS_Index      → Test → {}"
+          echo "  2. antenna-chatbot_Lambda → Test → ping"
+          echo "================================================"
