@@ -139,9 +139,11 @@ jobs:
             --no-cli-pager
           aws lambda wait function-updated --function-name Build_FAISS_Index
 
+          # Set layers AND environment variables in one call
           aws lambda update-function-configuration \
             --function-name Build_FAISS_Index \
             --layers ${{ steps.layer.outputs.arn }} \
+            --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }}}" \
             --no-cli-pager
           aws lambda wait function-updated --function-name Build_FAISS_Index
           echo "Build_FAISS_Index deployed"
@@ -156,9 +158,11 @@ jobs:
             --no-cli-pager
           aws lambda wait function-updated --function-name antenna-chatbot_Lambda
 
+          # Set layers AND environment variables in one call
           aws lambda update-function-configuration \
             --function-name antenna-chatbot_Lambda \
             --layers ${{ steps.layer.outputs.arn }} \
+            --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }},GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}}" \
             --no-cli-pager
           aws lambda wait function-updated --function-name antenna-chatbot_Lambda
           echo "antenna-chatbot_Lambda deployed"
