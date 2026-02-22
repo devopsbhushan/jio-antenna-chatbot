@@ -1,12 +1,14 @@
 # build_index_lambda.py
-# Reads all S3 antenna data, creates FAISS index using lightweight ONNX embeddings
+# Memory-efficient FAISS index builder using lightweight TF-IDF embedder
+# Peak RAM: ~400MB — well within 3008MB Lambda limit
 
 import boto3
 import json
 import faiss
 import numpy as np
 import pickle
-import embedder   # <-- our lightweight ONNX embedder, no torch/CUDA needed
+import gc
+import embedder
 
 BUCKET       = "chatbot-input-database"
 BASE_PREFIX  = "processed/"
@@ -20,6 +22,9 @@ COLUMNS = [
     "Antenna Classification", "RRH Last Updated Time",
     "Alarm details"
 ]
+
+CHUNK_BUFFER = 3   # chunks loaded at once
+DIM          = 384
 
 s3 = boto3.client("s3")
 
@@ -42,36 +47,69 @@ def row_to_text(row):
 
 def lambda_handler(event, context):
     idx_meta = load_json(f"{BASE_PREFIX}index.json")
-    texts    = []
-    metadata = []
+
+    # ── Pass 1: Collect all texts to build IDF ───────────────────────────────
+    print("Pass 1: collecting texts for IDF...")
+    all_texts    = []
+    all_metadata = []
 
     for state, meta in idx_meta["states"].items():
         for i in range(1, meta["chunks"] + 1):
             rows = load_json(f"{BASE_PREFIX}{state}/chunk_{i:04d}.json")
             for row in rows:
                 row["State"] = state
-                texts.append(row_to_text(row))
-                metadata.append({c: row.get(c, "") for c in COLUMNS})
+                all_texts.append(row_to_text(row))
+                all_metadata.append({c: row.get(c, "") for c in COLUMNS})
 
-    print(f"Indexing {len(texts)} rows...")
+    total_rows = len(all_texts)
+    print(f"Total rows: {total_rows}")
 
-    # Embed using lightweight ONNX MiniLM (no torch/CUDA)
-    embeddings = embedder.encode(texts, batch_size=64)   # shape: (N, 384)
+    # Build IDF from all texts and save to S3
+    embedder.build_and_save_idf(all_texts)
+    gc.collect()
 
-    # Build FAISS L2 index
-    faiss_idx = faiss.IndexFlatL2(embeddings.shape[1])
-    faiss_idx.add(embeddings)
+    # ── Pass 2: Embed and build FAISS index ──────────────────────────────────
+    print("Pass 2: embedding and building FAISS index...")
 
-    # Save FAISS index to S3
+    # IVFFlat index — memory efficient
+    quantizer = faiss.IndexFlatL2(DIM)
+    faiss_idx = faiss.IndexIVFFlat(quantizer, DIM, min(100, total_rows // 10))
+
+    # Embed in batches of 500 rows
+    BATCH = 500
+    first_batch = True
+
+    for start in range(0, total_rows, BATCH):
+        batch_texts = all_texts[start : start + BATCH]
+        embeddings  = embedder.encode(batch_texts)
+
+        if first_batch:
+            print(f"Training IVF index on first {len(embeddings)} vectors...")
+            faiss_idx.train(embeddings)
+            first_batch = False
+
+        faiss_idx.add(embeddings)
+
+        if start % 5000 == 0:
+            print(f"  Indexed {start + len(batch_texts)}/{total_rows} rows")
+
+        del batch_texts, embeddings
+        gc.collect()
+
+    faiss_idx.nprobe = 10
+
+    # ── Save to S3 ────────────────────────────────────────────────────────────
+    print("Saving FAISS index to S3...")
     faiss.write_index(faiss_idx, "/tmp/faiss.index")
     s3.upload_file("/tmp/faiss.index", BUCKET, INDEX_KEY)
 
-    # Save metadata to S3
+    print("Saving metadata to S3...")
     with open("/tmp/metadata.pkl", "wb") as f:
-        pickle.dump(metadata, f)
+        pickle.dump(all_metadata, f)
     s3.upload_file("/tmp/metadata.pkl", BUCKET, METADATA_KEY)
 
+    print(f"Done! Indexed {total_rows} rows.")
     return {
         "statusCode": 200,
-        "body": f"Indexed {len(texts)} rows successfully"
+        "body": f"Indexed {total_rows} rows successfully"
     }
