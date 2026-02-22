@@ -18,7 +18,6 @@ jobs:
         with:
           python-version: '3.11'
 
-      # ── Configure AWS first — needed to clear layers ──────────────────────-
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -26,190 +25,115 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      # ── Clear all existing layers from both Lambdas ───────────────────────
       - name: Clear existing layers from both Lambdas
         run: |
-          echo "Clearing Build_FAISS_Index layers..."
-          aws lambda update-function-configuration \
-            --function-name Build_FAISS_Index \
-            --layers --no-cli-pager
-          aws lambda wait function-updated \
-            --function-name Build_FAISS_Index
-
-          echo "Clearing antenna-chatbot_Lambda layers..."
-          aws lambda update-function-configuration \
-            --function-name antenna-chatbot_Lambda \
-            --layers --no-cli-pager
-          aws lambda wait function-updated \
-            --function-name antenna-chatbot_Lambda
-
+          aws lambda update-function-configuration --function-name Build_FAISS_Index --layers --no-cli-pager
+          aws lambda wait function-updated --function-name Build_FAISS_Index
+          aws lambda update-function-configuration --function-name antenna-chatbot_Lambda --layers --no-cli-pager
+          aws lambda wait function-updated --function-name antenna-chatbot_Lambda
           echo "All layers cleared"
 
-      # ── Download ONNX model files and upload to S3 ────────────────────────
-      # Lambda will read from S3 — never calls HuggingFace
       - name: Download ONNX model and upload to S3
         run: |
-          mkdir -p /tmp/model
           pip install huggingface_hub --quiet
-
-          python3 << 'EOF'
-from huggingface_hub import hf_hub_download
-import shutil, os
-
-repo = "sentence-transformers/all-MiniLM-L6-v2"
-
-# Download model.onnx
-print("Downloading model.onnx...")
-path = hf_hub_download(
-    repo_id=repo,
-    filename="onnx/model.onnx",
-    local_dir="/tmp/model"
-)
-print(f"Downloaded: {path}")
-
-# Download tokenizer.json
-print("Downloading tokenizer.json...")
-path2 = hf_hub_download(
-    repo_id=repo,
-    filename="tokenizer.json",
-    local_dir="/tmp/model"
-)
-print(f"Downloaded: {path2}")
-
-# List what we got
-for root, dirs, files in os.walk("/tmp/model"):
-    for f in files:
-        fp = os.path.join(root, f)
-        print(f"  {fp}  ({os.path.getsize(fp)//1024//1024} MB)")
-EOF
-
-          # Upload model files to S3 under rag-model/
-          # model.onnx is in /tmp/model/onnx/ subfolder
-          aws s3 cp /tmp/model/onnx/model.onnx \
-            s3://${{ secrets.S3_BUCKET }}/rag-model/model.onnx
-          aws s3 cp /tmp/model/tokenizer.json \
-            s3://${{ secrets.S3_BUCKET }}/rag-model/tokenizer.json
-
-          echo "Model files uploaded to S3:"
+          python3 -c "
+          from huggingface_hub import hf_hub_download
+          import os
+          repo = 'sentence-transformers/all-MiniLM-L6-v2'
+          print('Downloading model.onnx...')
+          hf_hub_download(repo_id=repo, filename='onnx/model.onnx', local_dir='/tmp/model')
+          print('Downloading tokenizer.json...')
+          hf_hub_download(repo_id=repo, filename='tokenizer.json', local_dir='/tmp/model')
+          for root, dirs, files in os.walk('/tmp/model'):
+              for f in files:
+                  fp = os.path.join(root, f)
+                  print(fp, os.path.getsize(fp)//1024, 'KB')
+          "
+          aws s3 cp /tmp/model/onnx/model.onnx s3://${{ secrets.S3_BUCKET }}/rag-model/model.onnx
+          aws s3 cp /tmp/model/tokenizer.json  s3://${{ secrets.S3_BUCKET }}/rag-model/tokenizer.json
+          echo "Model files uploaded to S3"
           aws s3 ls s3://${{ secrets.S3_BUCKET }}/rag-model/
 
-      # ── Download wheels with correct platform ─────────────────────────────
       - name: Download all wheels
         run: |
           mkdir -p /tmp/wheels
-
-          for pkg in \
-            "numpy==1.24.4" \
-            "faiss-cpu==1.7.4" \
-            "onnxruntime==1.16.3" \
-            "tokenizers==0.15.2" \
-            "requests==2.31.0"; do
-            pip download "$pkg" \
-              --dest /tmp/wheels \
-              --only-binary=:all: \
-              --python-version 3.11 \
-              --platform manylinux2014_x86_64 \
-              --no-deps 2>/dev/null || \
-            pip download "$pkg" \
-              --dest /tmp/wheels \
-              --only-binary=:all: \
-              --python-version 3.11 \
-              --platform manylinux_2_17_x86_64 \
-              --no-deps
+          for pkg in "numpy==1.24.4" "faiss-cpu==1.7.4" "onnxruntime==1.16.3" "tokenizers==0.15.2" "requests==2.31.0"; do
+            pip download "$pkg" --dest /tmp/wheels --only-binary=:all: --python-version 3.11 --platform manylinux2014_x86_64 --no-deps 2>/dev/null || \
+            pip download "$pkg" --dest /tmp/wheels --only-binary=:all: --python-version 3.11 --platform manylinux_2_17_x86_64 --no-deps
           done
-
-          pip download \
-            "certifi" "charset-normalizer" "idna" "urllib3" \
-            "flatbuffers" "packaging" "protobuf" "sympy" \
-            "coloredlogs" "humanfriendly" "mpmath" \
-            --dest /tmp/wheels \
-            --only-binary=:all: \
-            --python-version 3.11 \
-            --platform manylinux2014_x86_64 2>/dev/null || true
-
+          pip download "certifi" "charset-normalizer" "idna" "urllib3" "flatbuffers" "packaging" "protobuf" "sympy" "coloredlogs" "humanfriendly" "mpmath" --dest /tmp/wheels --only-binary=:all: --python-version 3.11 --platform manylinux2014_x86_64 2>/dev/null || true
           echo "Wheels downloaded:"
-          ls /tmp/wheels/ | sed 's/^/  /'
+          ls /tmp/wheels/
 
-      # ── Layer 1: numpy + faiss ────────────────────────────────────────────
-      - name: Build Layer 1 — numpy and faiss
+      - name: Build Layer 1 - numpy and faiss
         run: |
           mkdir -p layer1/python
-          pip install /tmp/wheels/numpy*.whl \
-            --target layer1/python --no-deps --quiet
+          pip install /tmp/wheels/numpy*.whl --target layer1/python --no-deps --quiet
           FAISS=$(ls /tmp/wheels/ | grep -i faiss | head -1)
-          pip install /tmp/wheels/$FAISS \
-            --target layer1/python --no-deps --quiet
+          pip install /tmp/wheels/$FAISS --target layer1/python --no-deps --quiet
           cd layer1/python
           find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
           find . -type d -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || true
           find . -name "*.pyc" -delete 2>/dev/null || true
           cd ../..
-          echo "Layer 1: $(du -sh layer1/ | cut -f1)"
+          echo "Layer 1 size: $(du -sh layer1/ | cut -f1)"
           cd layer1 && zip -r ../layer1.zip python/ -q && cd ..
           ls -lh layer1.zip
 
-      # ── Layer 2: onnxruntime + tokenizers + requests ──────────────────────
-      - name: Build Layer 2 — onnxruntime, tokenizers, requests
+      - name: Build Layer 2 - onnxruntime tokenizers requests
         run: |
           mkdir -p layer2/python
           for whl in /tmp/wheels/*.whl; do
             name=$(basename "$whl")
             if echo "$name" | grep -qiE "^(numpy|faiss)"; then continue; fi
-            pip install "$whl" \
-              --target layer2/python --no-deps --quiet 2>/dev/null || true
+            pip install "$whl" --target layer2/python --no-deps --quiet 2>/dev/null || true
           done
           cd layer2/python
           find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
           find . -type d -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || true
           find . -name "*.pyc" -delete 2>/dev/null || true
           cd ../..
-          echo "Layer 2: $(du -sh layer2/ | cut -f1)"
+          echo "Layer 2 size: $(du -sh layer2/ | cut -f1)"
           cd layer2 && zip -r ../layer2.zip python/ -q && cd ..
           ls -lh layer2.zip
 
-      # ── Size check ────────────────────────────────────────────────────────
       - name: Check layer sizes
         run: |
           S1=$(du -sm layer1/ | cut -f1)
           S2=$(du -sm layer2/ | cut -f1)
-          echo "Layer 1: ${S1}MB  |  Layer 2: ${S2}MB"
-          [ "$S1" -le 250 ] && [ "$S2" -le 250 ] && echo "Both OK" || exit 1
+          echo "Layer 1: ${S1}MB  Layer 2: ${S2}MB"
+          if [ "$S1" -gt 250 ] || [ "$S2" -gt 250 ]; then echo "ERROR too large"; exit 1; fi
+          echo "Both OK"
 
-      # ── Build handler zips (code only) ────────────────────────────────────
       - name: Build handler zips
         run: |
           mkdir -p handler_index handler_chatbot
-
           cp embedder.py           handler_index/
           cp build_index_lambda.py handler_index/lambda_function.py
           cd handler_index && zip -r ../build_index_lambda.zip . -q && cd ..
-
           cp embedder.py       handler_chatbot/
           cp chatbot_lambda.py handler_chatbot/lambda_function.py
           cd handler_chatbot && zip -r ../chatbot_lambda.zip . -q && cd ..
-
           echo "Handler sizes:"
           ls -lh build_index_lambda.zip chatbot_lambda.zip
 
-      # ── Upload everything to S3 ───────────────────────────────────────────
-      - name: Upload to S3
+      - name: Upload all to S3
         run: |
           aws s3 cp layer1.zip             s3://${{ secrets.S3_BUCKET }}/deployments/layer1.zip
           aws s3 cp layer2.zip             s3://${{ secrets.S3_BUCKET }}/deployments/layer2.zip
           aws s3 cp build_index_lambda.zip s3://${{ secrets.S3_BUCKET }}/deployments/build_index_lambda.zip
           aws s3 cp chatbot_lambda.zip     s3://${{ secrets.S3_BUCKET }}/deployments/chatbot_lambda.zip
-          echo "All uploaded"
+          echo "All uploaded to S3"
 
-      # ── Publish layers ────────────────────────────────────────────────────
       - name: Publish Layer 1
         id: layer1
         run: |
           ARN=$(aws lambda publish-layer-version \
             --layer-name rag-numpy-faiss \
-            --description 'numpy 1.24.4 + faiss-cpu manylinux2014' \
+            --description "numpy 1.24.4 plus faiss-cpu manylinux2014" \
             --content S3Bucket=${{ secrets.S3_BUCKET }},S3Key=deployments/layer1.zip \
             --compatible-runtimes python3.11 \
-            --query 'LayerVersionArn' --output text)
+            --query LayerVersionArn --output text)
           echo "arn=$ARN" >> $GITHUB_OUTPUT
           echo "Layer 1 ARN: $ARN"
 
@@ -218,14 +142,13 @@ EOF
         run: |
           ARN=$(aws lambda publish-layer-version \
             --layer-name rag-onnx-tokenizers \
-            --description 'onnxruntime + tokenizers + requests manylinux2014' \
+            --description "onnxruntime plus tokenizers plus requests manylinux2014" \
             --content S3Bucket=${{ secrets.S3_BUCKET }},S3Key=deployments/layer2.zip \
             --compatible-runtimes python3.11 \
-            --query 'LayerVersionArn' --output text)
+            --query LayerVersionArn --output text)
           echo "arn=$ARN" >> $GITHUB_OUTPUT
           echo "Layer 2 ARN: $ARN"
 
-      # ── Deploy Build_FAISS_Index ──────────────────────────────────────────
       - name: Deploy Build_FAISS_Index
         run: |
           aws lambda update-function-code \
@@ -236,14 +159,11 @@ EOF
           aws lambda wait function-updated --function-name Build_FAISS_Index
           aws lambda update-function-configuration \
             --function-name Build_FAISS_Index \
-            --layers \
-              ${{ steps.layer1.outputs.arn }} \
-              ${{ steps.layer2.outputs.arn }} \
+            --layers ${{ steps.layer1.outputs.arn }} ${{ steps.layer2.outputs.arn }} \
             --no-cli-pager
           aws lambda wait function-updated --function-name Build_FAISS_Index
           echo "Build_FAISS_Index deployed"
 
-      # ── Deploy antenna-chatbot_Lambda ─────────────────────────────────────
       - name: Deploy antenna-chatbot_Lambda
         run: |
           aws lambda update-function-code \
@@ -254,14 +174,11 @@ EOF
           aws lambda wait function-updated --function-name antenna-chatbot_Lambda
           aws lambda update-function-configuration \
             --function-name antenna-chatbot_Lambda \
-            --layers \
-              ${{ steps.layer1.outputs.arn }} \
-              ${{ steps.layer2.outputs.arn }} \
+            --layers ${{ steps.layer1.outputs.arn }} ${{ steps.layer2.outputs.arn }} \
             --no-cli-pager
           aws lambda wait function-updated --function-name antenna-chatbot_Lambda
           echo "antenna-chatbot_Lambda deployed"
 
-      # ── Summary ───────────────────────────────────────────────────────────
       - name: Print summary
         run: |
           echo "================================================"
@@ -269,11 +186,7 @@ EOF
           echo "================================================"
           echo "Layer 1: ${{ steps.layer1.outputs.arn }}"
           echo "Layer 2: ${{ steps.layer2.outputs.arn }}"
-          echo ""
-          echo "ONNX model files in S3:"
-          aws s3 ls s3://${{ secrets.S3_BUCKET }}/rag-model/
-          echo ""
           echo "Test order:"
-          echo "  1. Build_FAISS_Index      → Test → {}"
-          echo "  2. antenna-chatbot_Lambda → Test → ping"
+          echo "  1. Build_FAISS_Index      - Test - {}"
+          echo "  2. antenna-chatbot_Lambda - Test - ping"
           echo "================================================"
