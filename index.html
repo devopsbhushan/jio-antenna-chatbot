@@ -1,0 +1,326 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Jio Antenna Chatbot</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: 'Segoe UI', Arial, sans-serif;
+      background: #f0f2f5;
+      display: flex;
+      flex-direction: column;
+      height: 100vh;
+      overflow: hidden;
+    }
+
+    /* ── Header ── */
+    .header {
+      background: linear-gradient(135deg, #d50000, #b71c1c);
+      color: white;
+      padding: 14px 20px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      box-shadow: 0 2px 8px rgba(0,0,0,0.2);
+    }
+    .header-icon {
+      width: 38px; height: 38px;
+      background: rgba(255,255,255,0.2);
+      border-radius: 50%;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 20px;
+    }
+    .header-text h1 { font-size: 17px; font-weight: 700; }
+    .header-text p  { font-size: 12px; opacity: 0.85; margin-top: 2px; }
+    .status-dot {
+      width: 8px; height: 8px;
+      background: #69f0ae;
+      border-radius: 50%;
+      margin-left: auto;
+      box-shadow: 0 0 6px #69f0ae;
+      animation: pulse 2s infinite;
+    }
+    @keyframes pulse {
+      0%,100% { opacity: 1; }
+      50%      { opacity: 0.4; }
+    }
+
+    /* ── Chat area ── */
+    #chat {
+      flex: 1;
+      overflow-y: auto;
+      padding: 20px 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+
+    .msg {
+      max-width: 78%;
+      padding: 11px 16px;
+      border-radius: 16px;
+      font-size: 14px;
+      line-height: 1.6;
+      white-space: pre-wrap;
+      word-break: break-word;
+      animation: fadeIn 0.2s ease;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(6px); }
+      to   { opacity: 1; transform: translateY(0); }
+    }
+
+    .user {
+      background: #1565c0;
+      color: white;
+      align-self: flex-end;
+      border-radius: 16px 16px 4px 16px;
+    }
+    .bot {
+      background: white;
+      color: #1a1a2e;
+      align-self: flex-start;
+      border-radius: 16px 16px 16px 4px;
+      box-shadow: 0 1px 6px rgba(0,0,0,0.08);
+    }
+    .bot-meta {
+      font-size: 11px;
+      color: #999;
+      margin-top: 6px;
+      padding-top: 6px;
+      border-top: 1px solid #f0f0f0;
+    }
+    .typing {
+      color: #888;
+      font-style: italic;
+      font-size: 13px;
+    }
+    .typing::after {
+      content: '...';
+      animation: dots 1.2s infinite;
+    }
+    @keyframes dots {
+      0%,20%  { content: '.';   }
+      40%     { content: '..';  }
+      60%,100%{ content: '...'; }
+    }
+
+    /* ── Suggestions ── */
+    .suggestions {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin-top: 10px;
+    }
+    .suggestion {
+      background: #e8f0fe;
+      color: #1565c0;
+      border: 1px solid #c5d8fb;
+      border-radius: 20px;
+      padding: 6px 14px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+    }
+    .suggestion:hover {
+      background: #1565c0;
+      color: white;
+    }
+
+    /* ── Input bar ── */
+    .input-bar {
+      background: white;
+      border-top: 1px solid #e0e0e0;
+      padding: 12px 16px;
+      display: flex;
+      gap: 8px;
+      align-items: center;
+    }
+    #inp {
+      flex: 1;
+      padding: 10px 16px;
+      border: 1.5px solid #e0e0e0;
+      border-radius: 24px;
+      font-size: 14px;
+      outline: none;
+      transition: border-color 0.2s;
+      font-family: inherit;
+    }
+    #inp:focus { border-color: #1565c0; }
+    #inp:disabled { background: #f5f5f5; }
+
+    .btn-send {
+      padding: 10px 20px;
+      background: #d50000;
+      color: white;
+      border: none;
+      border-radius: 24px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background 0.2s;
+      white-space: nowrap;
+    }
+    .btn-send:hover    { background: #b71c1c; }
+    .btn-send:disabled { background: #ccc; cursor: not-allowed; }
+
+    .btn-clear {
+      padding: 10px 14px;
+      background: #f5f5f5;
+      color: #555;
+      border: none;
+      border-radius: 24px;
+      font-size: 13px;
+      cursor: pointer;
+      transition: background 0.2s;
+    }
+    .btn-clear:hover { background: #e0e0e0; }
+
+    /* ── Error banner ── */
+    .error-banner {
+      background: #ffebee;
+      color: #c62828;
+      border-left: 4px solid #c62828;
+      padding: 10px 14px;
+      font-size: 13px;
+      margin: 0 16px;
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body>
+
+<div class="header">
+  <div class="header-icon">📡</div>
+  <div class="header-text">
+    <h1>Jio Antenna RAG Chatbot</h1>
+    <p>Llama 3 · FAISS · 134,843 antenna records indexed</p>
+  </div>
+  <div class="status-dot" title="Online"></div>
+</div>
+
+<div id="chat">
+  <div class="msg bot">
+    👋 Hello! I can answer questions about Jio antenna inventory data.
+    <div class="suggestions">
+      <span class="suggestion" onclick="ask(this)">Sites with alarms in Maharashtra</span>
+      <span class="suggestion" onclick="ask(this)">Show VSWR alarm sites</span>
+      <span class="suggestion" onclick="ask(this)">Unidentified antennas in band 2100</span>
+      <span class="suggestion" onclick="ask(this)">Sites with missing RET data</span>
+      <span class="suggestion" onclick="ask(this)">Recent antenna updates</span>
+    </div>
+  </div>
+</div>
+
+<div id="error-area"></div>
+
+<div class="input-bar">
+  <input id="inp"
+    placeholder="Ask about SAP IDs, alarms, antenna types, bands..."
+    onkeydown="if(event.key==='Enter'&&!event.shiftKey){event.preventDefault();send()}"
+  >
+  <button class="btn-send" id="sendBtn" onclick="send()">Send</button>
+  <button class="btn-clear" onclick="clearChat()">Clear</button>
+</div>
+
+<script>
+  const API = https://xr525wyykz4ksgcddh464p72oq0vawsf.lambda-url.ap-south-1.on.aws/;
+
+  let history = [];
+  let waiting = false;
+
+  function ask(el) {
+    document.getElementById('inp').value = el.textContent;
+    send();
+  }
+
+  function addMsg(text, cls, meta) {
+    const chat = document.getElementById('chat');
+    const id   = 'm' + Date.now() + Math.random();
+    const metaHtml = meta
+      ? `<div class="bot-meta">📊 Retrieved ${meta} records from 134,843 indexed</div>`
+      : '';
+    const safe = text.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    chat.innerHTML += `<div class="msg ${cls}" id="${id}">${safe}${metaHtml}</div>`;
+    chat.scrollTop = chat.scrollHeight;
+    return id;
+  }
+
+  function removeMsg(id) {
+    const el = document.getElementById(id);
+    if (el) el.remove();
+  }
+
+  function showError(msg) {
+    document.getElementById('error-area').innerHTML =
+      `<div class="error-banner">⚠ ${msg}</div>`;
+    setTimeout(() => document.getElementById('error-area').innerHTML = '', 5000);
+  }
+
+  async function send() {
+    if (waiting) return;
+    const inp = document.getElementById('inp');
+    const msg = inp.value.trim();
+    if (!msg) return;
+
+    // Check URL is configured
+    if (API === 'PASTE_YOUR_FUNCTION_URL_HERE') {
+      showError('Please paste your Lambda Function URL in the API variable inside index.html');
+      return;
+    }
+
+    inp.value = '';
+    addMsg(msg, 'user');
+    waiting = true;
+    document.getElementById('sendBtn').disabled = true;
+    inp.disabled = true;
+
+    const tid = addMsg('Searching antenna records', 'bot typing');
+
+    try {
+      const res = await fetch(API, {
+        method:  'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body:    JSON.stringify({ message: msg, history })
+      });
+
+      removeMsg(tid);
+
+      if (!res.ok) {
+        const err = await res.text();
+        showError(`Server error ${res.status}: ${err}`);
+      } else {
+        const data = await res.json();
+        addMsg(data.reply, 'bot', data.retrieved);
+        history = data.history || [];
+      }
+    } catch (e) {
+      removeMsg(tid);
+      showError(`Could not reach Lambda. Check Function URL and CORS settings. (${e.message})`);
+    }
+
+    waiting = false;
+    document.getElementById('sendBtn').disabled = false;
+    inp.disabled = false;
+    inp.focus();
+  }
+
+  function clearChat() {
+    history = [];
+    document.getElementById('chat').innerHTML = `
+      <div class="msg bot">
+        Chat cleared. Ask a new question!
+        <div class="suggestions">
+          <span class="suggestion" onclick="ask(this)">Sites with alarms in Maharashtra</span>
+          <span class="suggestion" onclick="ask(this)">Show VSWR alarm sites</span>
+          <span class="suggestion" onclick="ask(this)">Unidentified antennas in band 2100</span>
+          <span class="suggestion" onclick="ask(this)">Sites with missing RET data</span>
+        </div>
+      </div>`;
+  }
+</script>
+</body>
+</html>
