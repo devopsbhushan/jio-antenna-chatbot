@@ -6,8 +6,6 @@ on:
 jobs:
   deploy:
     runs-on: ubuntu-latest
-    container:
-      image: public.ecr.aws/lambda/python:3.11
     timeout-minutes: 45
 
     steps:
@@ -15,25 +13,59 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # ── Install packages directly into deployment folder ─────────────────
-      # No layer. Everything bundled inside the Lambda zip itself.
-      # This eliminates all layer attachment and GLIBC mismatch issues.
-      - name: Install packages into package folder
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      # ── Download numpy wheel that works on Lambda GLIBC 2.17 ─────────────
+      # numpy 1.24.4 manylinux2014 wheel is compiled against GLIBC 2.17
+      # We download it directly from PyPI instead of letting pip pick
+      # a newer incompatible wheel automatically
+      - name: Download compatible numpy wheel directly
         run: |
           mkdir -p package
 
-          pip3 install "numpy==1.24.4"       --target package --quiet
-          pip3 install "faiss-cpu==1.7.4"    --target package --quiet
-          pip3 install "onnxruntime==1.16.3" --target package --quiet
-          pip3 install "tokenizers==0.15.2"  --target package --quiet
-          pip3 install "requests==2.31.0"    --target package --quiet
+          # Download numpy 1.24.4 manylinux2014 wheel directly from PyPI
+          # manylinux2014 = compiled for GLIBC 2.17 = works on Lambda
+          pip download "numpy==1.24.4" \
+            --dest /tmp/wheels \
+            --only-binary=:all: \
+            --python-version 3.11 \
+            --platform manylinux2014_x86_64
 
-          echo "Packages installed:"
+          echo "Downloaded wheels:"
+          ls -lh /tmp/wheels/
+
+          # Verify it is the manylinux2014 wheel (not manylinux_2_27)
+          ls /tmp/wheels/ | grep numpy
+
+      - name: Install numpy from downloaded wheel
+        run: |
+          # Install the specific manylinux2014 numpy wheel we downloaded
+          pip install /tmp/wheels/numpy*.whl --target package --quiet
+          echo "numpy installed:"
+          ls package/ | grep numpy
+
+      - name: Install remaining packages
+        run: |
+          pip install "faiss-cpu==1.7.4"    --target package --quiet
+          pip install "onnxruntime==1.16.3" --target package --quiet
+          pip install "tokenizers==0.15.2"  --target package --quiet
+          pip install "requests==2.31.0"    --target package --quiet
+          echo "All packages installed"
           du -sh package/
-          echo "Breakdown:"
-          du -sh package/*/ 2>/dev/null | sort -rh | head -10
 
-      # ── Strip to reduce size ─────────────────────────────────────────────
+      - name: Verify numpy GLIBC requirement
+        run: |
+          # Check which GLIBC version the installed numpy actually needs
+          NUMPY_SO=$(find package/ -name "_multiarray_umath*.so" | head -1)
+          echo "Numpy binary: $NUMPY_SO"
+          objdump -T "$NUMPY_SO" 2>/dev/null | grep GLIBC | \
+            grep -oP 'GLIBC_[0-9.]+' | sort -V | tail -5 || true
+          # Should show max GLIBC_2.17 — if it shows 2.27+ something went wrong
+          echo "If max above is 2.17 or lower — numpy is Lambda-compatible"
+
       - name: Strip unnecessary files
         run: |
           cd package
@@ -45,11 +77,12 @@ jobs:
           find . -name "*.pyc" -delete 2>/dev/null || true
           find . -name "*.pyo" -delete 2>/dev/null || true
           cd ..
-          echo "After strip:"
+          echo "After stripping:"
           du -sh package/
+          echo "Top folders:"
+          du -sh package/*/ 2>/dev/null | sort -rh | head -10
 
-      # ── Check size ───────────────────────────────────────────────────────
-      - name: Check size
+      - name: Check total size
         run: |
           SIZE=$(du -sm package/ | cut -f1)
           echo "Package size: ${SIZE} MB"
@@ -58,26 +91,20 @@ jobs:
             du -sh package/*/ | sort -rh | head -10
             exit 1
           fi
-          echo "Size OK"
+          echo "Size OK — within 250MB Lambda limit"
 
-      # ── Copy Lambda handler files into package ───────────────────────────
-      # embedder.py and lambda handlers must be in root of zip
-      - name: Copy handler files into package
+      # ── Build index Lambda zip ────────────────────────────────────────────
+      - name: Build index Lambda zip
         run: |
           cp embedder.py           package/
           cp build_index_lambda.py package/lambda_function.py
-          echo "Index Lambda files ready"
-
-      # ── Zip index Lambda ─────────────────────────────────────────────────
-      - name: Zip index Lambda
-        run: |
           cd package
           zip -r ../build_index_lambda.zip . -q
           cd ..
           ls -lh build_index_lambda.zip
 
-      # ── Swap handler for chatbot Lambda ──────────────────────────────────
-      - name: Swap handler for chatbot Lambda
+      # ── Build chatbot Lambda zip ──────────────────────────────────────────
+      - name: Build chatbot Lambda zip
         run: |
           cp chatbot_lambda.py package/lambda_function.py
           cd package
@@ -85,7 +112,7 @@ jobs:
           cd ..
           ls -lh chatbot_lambda.zip
 
-      # ── Configure AWS ────────────────────────────────────────────────────
+      # ── AWS credentials ───────────────────────────────────────────────────
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -93,76 +120,64 @@ jobs:
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           aws-region:            ${{ secrets.AWS_REGION }}
 
-      # ── Upload zips to S3 ────────────────────────────────────────────────
+      # ── Upload to S3 ──────────────────────────────────────────────────────
       - name: Upload zips to S3
         run: |
           aws s3 cp build_index_lambda.zip \
             s3://${{ secrets.S3_BUCKET }}/deployments/build_index_lambda.zip
           aws s3 cp chatbot_lambda.zip \
             s3://${{ secrets.S3_BUCKET }}/deployments/chatbot_lambda.zip
-          echo "Uploaded both zips to S3"
+          echo "Both zips uploaded to S3"
 
-      # ── Deploy index Lambda directly ─────────────────────────────────────
-      - name: Deploy build-faiss-index Lambda
+      # ── Deploy index Lambda ───────────────────────────────────────────────
+      - name: Deploy build-faiss-index
         run: |
           aws lambda update-function-code \
             --function-name build-faiss-index \
             --s3-bucket ${{ secrets.S3_BUCKET }} \
             --s3-key deployments/build_index_lambda.zip \
             --no-cli-pager
-          echo "build-faiss-index deployed"
-
-      # ── Wait for index Lambda update to complete ─────────────────────────
-      - name: Wait for build-faiss-index update
-        run: |
           aws lambda wait function-updated \
             --function-name build-faiss-index
-          echo "build-faiss-index ready"
+          echo "build-faiss-index deployed and ready"
 
-      # ── Deploy chatbot Lambda directly ───────────────────────────────────
-      - name: Deploy antenna-chatbot Lambda
+      # ── Deploy chatbot Lambda ─────────────────────────────────────────────
+      - name: Deploy antenna-chatbot
         run: |
           aws lambda update-function-code \
             --function-name antenna-chatbot \
             --s3-bucket ${{ secrets.S3_BUCKET }} \
             --s3-key deployments/chatbot_lambda.zip \
             --no-cli-pager
-          echo "antenna-chatbot deployed"
-
-      # ── Wait for chatbot Lambda update to complete ───────────────────────
-      - name: Wait for antenna-chatbot update
-        run: |
           aws lambda wait function-updated \
             --function-name antenna-chatbot
-          echo "antenna-chatbot ready"
+          echo "antenna-chatbot deployed and ready"
 
-      # ── Remove old layer from both Lambdas ───────────────────────────────
-      - name: Remove old layers from both Lambdas
+      # ── Remove layers from both Lambdas ───────────────────────────────────
+      - name: Remove all layers from both Lambdas
         run: |
           aws lambda update-function-configuration \
             --function-name build-faiss-index \
             --layers \
-            --no-cli-pager 2>/dev/null || true
+            --no-cli-pager 2>/dev/null || \
+          echo "No layers to remove from build-faiss-index"
 
           aws lambda update-function-configuration \
             --function-name antenna-chatbot \
             --layers \
-            --no-cli-pager 2>/dev/null || true
+            --no-cli-pager 2>/dev/null || \
+          echo "No layers to remove from antenna-chatbot"
 
-          echo "Layers removed from both Lambdas"
-
-      # ── Final summary ────────────────────────────────────────────────────
+      # ── Print summary ─────────────────────────────────────────────────────
       - name: Print summary
         run: |
           echo "============================================"
           echo "DEPLOYMENT COMPLETE"
           echo "============================================"
-          echo "Both Lambda functions deployed with packages"
-          echo "bundled directly — NO layer needed."
+          echo "Both Lambdas deployed with bundled packages."
+          echo "All layers removed. No manual steps needed."
           echo ""
-          echo "No manual steps required in AWS Console."
-          echo ""
-          echo "Test now:"
-          echo "  Lambda → build-faiss-index → Test → {}"
-          echo "  Lambda → antenna-chatbot   → Test → ping"
+          echo "Test in AWS Console:"
+          echo "  1. build-faiss-index  → Test → {}"
+          echo "  2. antenna-chatbot    → Test → ping event"
           echo "============================================"
