@@ -73,7 +73,7 @@ def ask_groq(question, docs, history):
     ])
 
     payload = json.dumps({
-        "model": "llama3-8b-8192",
+        "model": "llama-3.1-8b-instant",
         "messages": [
             {"role": "system", "content":
              "You are a Jio antenna inventory assistant. "
