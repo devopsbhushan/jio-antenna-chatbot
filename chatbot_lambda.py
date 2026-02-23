@@ -1,4 +1,5 @@
 # chatbot_lambda.py
+# No CORS headers in code — handled entirely by Lambda Function URL config
 
 import boto3, json, faiss, numpy as np, pickle
 import os, re, hashlib, ssl
@@ -11,13 +12,6 @@ DIM      = 384
 
 s3 = boto3.client("s3")
 _index = _idf = _meta = None
-
-CORS = {
-    "Access-Control-Allow-Origin":  "*",
-    "Access-Control-Allow-Methods": "POST,OPTIONS",
-    "Access-Control-Allow-Headers": "*",
-    "Content-Type":                 "application/json"
-}
 
 
 def _load():
@@ -71,7 +65,6 @@ def ask_groq(question, docs, history):
         f"Updated:{r.get('RRH Last Updated Time','')}"
         for r in docs if r
     ])
-
     payload = json.dumps({
         "model": "llama-3.1-8b-instant",
         "messages": [
@@ -86,13 +79,10 @@ def ask_groq(question, docs, history):
         "temperature": 0.2
     }).encode("utf-8")
 
-    # Use ssl context that skips verification as fallback
     ctx_ssl = ssl.create_default_context()
-
     try:
         req = urllib.request.Request(
-            GROQ_URL,
-            data=payload,
+            GROQ_URL, data=payload,
             headers={
                 "Authorization": f"Bearer {GROQ_KEY}",
                 "Content-Type":  "application/json",
@@ -101,25 +91,24 @@ def ask_groq(question, docs, history):
             method="POST"
         )
         with urllib.request.urlopen(req, timeout=30, context=ctx_ssl) as r:
-            body = r.read()
-            print(f"Groq response status: {r.status}")
-            return json.loads(body)["choices"][0]["message"]["content"]
-
+            print(f"Groq status: {r.status}")
+            return json.loads(r.read())["choices"][0]["message"]["content"]
     except urllib.error.HTTPError as e:
-        error_body = e.read().decode("utf-8", errors="replace")
-        print(f"Groq HTTP error {e.code}: {error_body}")
-        raise Exception(f"Groq API error {e.code}: {error_body[:200]}")
-
+        body = e.read().decode("utf-8", errors="replace")
+        print(f"Groq HTTP error {e.code}: {body}")
+        raise Exception(f"Groq error {e.code}: {body[:200]}")
     except urllib.error.URLError as e:
         print(f"Groq URL error: {e.reason}")
-        raise Exception(f"Cannot reach Groq API: {e.reason}. "
-                        f"Lambda may not have internet access.")
+        raise Exception(f"Cannot reach Groq: {e.reason}")
 
 
 def lambda_handler(event, context):
+    # No CORS headers here — Lambda Function URL config handles all CORS
     method = event.get("requestContext", {}).get("http", {}).get("method", "")
+
+    # OPTIONS preflight — return empty 200 (Function URL adds CORS headers)
     if method == "OPTIONS":
-        return {"statusCode": 200, "headers": CORS, "body": ""}
+        return {"statusCode": 200, "body": ""}
 
     try:
         body = json.loads(event.get("body") or "{}")
@@ -131,11 +120,11 @@ def lambda_handler(event, context):
 
     if msg == "ping":
         _load()
-        return {"statusCode": 200, "headers": CORS,
+        return {"statusCode": 200,
                 "body": json.dumps({"reply": "warm"})}
 
     if not msg:
-        return {"statusCode": 400, "headers": CORS,
+        return {"statusCode": 400,
                 "body": json.dumps({"error": "No message"})}
 
     try:
@@ -143,7 +132,7 @@ def lambda_handler(event, context):
         answer = ask_groq(msg, docs, history)
     except Exception as e:
         print(f"Error: {e}")
-        return {"statusCode": 500, "headers": CORS,
+        return {"statusCode": 500,
                 "body": json.dumps({"error": str(e)})}
 
     h2 = (history + [
@@ -153,7 +142,6 @@ def lambda_handler(event, context):
 
     return {
         "statusCode": 200,
-        "headers":    CORS,
         "body": json.dumps({
             "reply":     answer,
             "history":   h2,
