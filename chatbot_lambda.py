@@ -1,5 +1,4 @@
 # chatbot_lambda.py
-# Returns both raw_records (all columns) and ai_summary separately
 
 import boto3, json, faiss, numpy as np, pickle
 import os, re, hashlib, ssl
@@ -38,7 +37,7 @@ def _load():
 
 
 def tokenize(t):
-    t = re.sub(r'[^a-z0-9\s]', ' ', t.lower())
+    t = re.sub(r"[^a-z0-9\s]", " ", t.lower())
     return [w for w in t.split() if len(w) > 1]
 
 
@@ -53,40 +52,60 @@ def encode(text):
     return vec.reshape(1, -1)
 
 
-def retrieve(query, top_k=20):
+def retrieve(query, top_k=50):
     _load()
     _, I = _index.search(encode(query), top_k)
     return [_meta[i] for i in I[0] if i != -1 and i < len(_meta)]
 
 
-def ask_groq(question, docs, history):
-    # Send compact record summary to Groq for AI summary only
+def extract_sap_id(msg):
+    # Match SAP ID pattern e.g. I-MH-TTWL-ENB-0001
+    m = re.search(r"I-[A-Z]{2}-[A-Z0-9]+-ENB-[0-9A-Z]+", msg.upper())
+    return m.group(0) if m else None
+
+
+def filter_records(docs, sap_id):
+    # If SAP ID found in question — show ONLY that SAP ID rows
+    if sap_id:
+        filtered = [r for r in docs if r.get("SAP ID", "").upper() == sap_id.upper()]
+        return filtered if filtered else docs  # fallback if no exact match
+    return docs
+
+
+def ask_groq(question, docs, history, sap_id=None):
     ctx = "\n".join([
-        f"SAP:{r.get('SAP ID','N/A')} State:{r.get('State','N/A')} "
-        f"Sector:{r.get('Sector Id','N/A')} Band:{r.get('Bands','N/A')} "
-        f"Model:{r.get('SF Antenna Model','N/A')} "
-        f"LSMR:{r.get('LSMR Antenna Type','N/A')} "
-        f"Alarm:{r.get('Alarm details','N/A')}"
+        f"Sector:{r.get('Sector Id','N/A')} | "
+        f"Band:{r.get('Bands','N/A')} | "
+        f"SF Model:{r.get('SF Antenna Model','N/A')} | "
+        f"LSMR:{r.get('LSMR Antenna Type','N/A')} | "
+        f"Classification:{r.get('Antenna Classification','N/A')} | "
+        f"Alarm:{r.get('Alarm details','N/A')} | "
+        f"Updated:{r.get('RRH Last Updated Time','N/A')}"
         for r in docs if r
     ])
+
+    state = docs[0].get("State", "N/A") if docs else "N/A"
+    site  = sap_id or "this site"
+
+    system = (
+        "You are a Jio antenna inventory assistant. "
+        "Write a site report in this exact format:\n"
+        f"Site: {site} | State: {state}\n\n"
+        "Then list each sector-band combination with:\n"
+        "- Sector X | Band Y | Antenna: [model] | Alarm: [alarm or None]\n\n"
+        "End with a 1-line summary of total sectors and alarm count. "
+        "Be concise. Only use the data provided."
+    )
 
     payload = json.dumps({
         "model": "llama-3.1-8b-instant",
         "messages": [
-            {"role": "system", "content":
-             "You are a Jio antenna inventory assistant. "
-             "The user can already see the full raw data table. "
-             "Your job is to write a SHORT 3-5 line AI summary that: "
-             "1) Directly answers the user's question "
-             "2) Highlights key patterns (common alarms, states, bands) "
-             "3) Flags anything notable (unidentified antennas, missing data) "
-             "Be concise. No need to list every record — the table shows that."}
+            {"role": "system", "content": system}
         ] + history + [
-            {"role": "user",
-             "content": f"Question: {question}\n\nData:\n{ctx}"}
+            {"role": "user", "content": f"Question: {question}\n\nAntenna records:\n{ctx}"}
         ],
         "max_tokens": 512,
-        "temperature": 0.2
+        "temperature": 0.1
     }).encode("utf-8")
 
     ctx_ssl = ssl.create_default_context()
@@ -111,7 +130,6 @@ def ask_groq(question, docs, history):
 
 def lambda_handler(event, context):
     method = event.get("requestContext", {}).get("http", {}).get("method", "")
-
     if method == "OPTIONS":
         return {"statusCode": 200, "body": ""}
 
@@ -125,27 +143,25 @@ def lambda_handler(event, context):
 
     if msg == "ping":
         _load()
-        return {"statusCode": 200,
-                "body": json.dumps({"reply": "warm"})}
+        return {"statusCode": 200, "body": json.dumps({"reply": "warm"})}
 
     if not msg:
-        return {"statusCode": 400,
-                "body": json.dumps({"error": "No message"})}
+        return {"statusCode": 400, "body": json.dumps({"error": "No message"})}
 
     try:
-        docs    = retrieve(msg)
-        summary = ask_groq(msg, docs, history)
+        sap_id  = extract_sap_id(msg)
+        docs    = retrieve(msg, top_k=50)
+        filtered = filter_records(docs, sap_id)
+        summary  = ask_groq(msg, filtered, history, sap_id)
 
-        # Return raw records (all columns) + AI summary separately
         raw_records = [
             {col: r.get(col, "") for col in COLUMNS}
-            for r in docs if r
+            for r in filtered
         ]
 
     except Exception as e:
         print(f"Error: {e}")
-        return {"statusCode": 500,
-                "body": json.dumps({"error": str(e)})}
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
 
     h2 = (history + [
         {"role": "user",      "content": msg},
@@ -155,10 +171,10 @@ def lambda_handler(event, context):
     return {
         "statusCode": 200,
         "body": json.dumps({
-            "summary":     summary,      # AI summary (short)
-            "records":     raw_records,  # Full raw data table
-            "columns":     COLUMNS,      # Column headers
-            "retrieved":   len(docs),
-            "history":     h2
+            "summary":   summary,
+            "records":   raw_records,
+            "columns":   COLUMNS,
+            "retrieved": len(filtered),
+            "history":   h2
         })
     }
