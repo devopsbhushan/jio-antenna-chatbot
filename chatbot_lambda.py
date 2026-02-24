@@ -1,5 +1,5 @@
 # chatbot_lambda.py
-# No CORS headers in code — handled entirely by Lambda Function URL config
+# Returns both raw_records (all columns) and ai_summary separately
 
 import boto3, json, faiss, numpy as np, pickle
 import os, re, hashlib, ssl
@@ -13,25 +13,28 @@ DIM      = 384
 s3 = boto3.client("s3")
 _index = _idf = _meta = None
 
+COLUMNS = [
+    "State", "SAP ID", "Sector Id", "Bands",
+    "RRH Connect Board ID", "RRH Connect Port ID",
+    "SF Antenna Model", "LSMR Antenna Type",
+    "Antenna Classification", "RRH Last Updated Time",
+    "Alarm details"
+]
+
 
 def _load():
     global _index, _idf, _meta
     if _index is None:
-        print("Loading FAISS index...")
         s3.download_file(BUCKET, "rag-index/faiss.index", "/tmp/faiss.index")
         _index = faiss.read_index("/tmp/faiss.index")
         if hasattr(_index, "nprobe"):
             _index.nprobe = 20
-        print(f"FAISS loaded: {_index.ntotal:,} vectors")
     if _idf is None:
         obj  = s3.get_object(Bucket=BUCKET, Key="rag-model/idf.pkl")
         _idf = pickle.loads(obj["Body"].read())
-        print(f"IDF loaded: {len(_idf):,} terms")
     if _meta is None:
-        print("Loading metadata...")
         obj   = s3.get_object(Bucket=BUCKET, Key="rag-index/metadata.pkl")
         _meta = pickle.loads(obj["Body"].read())
-        print(f"Metadata loaded: {len(_meta):,} rows")
 
 
 def tokenize(t):
@@ -57,25 +60,32 @@ def retrieve(query, top_k=20):
 
 
 def ask_groq(question, docs, history):
+    # Send compact record summary to Groq for AI summary only
     ctx = "\n".join([
-        f"SAP:{r.get('SAP ID','')} | State:{r.get('State','')} | "
-        f"Sector:{r.get('Sector Id','')} | Band:{r.get('Bands','')} | "
-        f"Antenna:{r.get('LSMR Antenna Type','')} | "
-        f"Alarm:{r.get('Alarm details','None')} | "
-        f"Updated:{r.get('RRH Last Updated Time','')}"
+        f"SAP:{r.get('SAP ID','N/A')} State:{r.get('State','N/A')} "
+        f"Sector:{r.get('Sector Id','N/A')} Band:{r.get('Bands','N/A')} "
+        f"Model:{r.get('SF Antenna Model','N/A')} "
+        f"LSMR:{r.get('LSMR Antenna Type','N/A')} "
+        f"Alarm:{r.get('Alarm details','N/A')}"
         for r in docs if r
     ])
+
     payload = json.dumps({
         "model": "llama-3.1-8b-instant",
         "messages": [
             {"role": "system", "content":
              "You are a Jio antenna inventory assistant. "
-             "Answer using only the retrieved data. "
-             "Mention SAP IDs, sectors, bands specifically."}
+             "The user can already see the full raw data table. "
+             "Your job is to write a SHORT 3-5 line AI summary that: "
+             "1) Directly answers the user's question "
+             "2) Highlights key patterns (common alarms, states, bands) "
+             "3) Flags anything notable (unidentified antennas, missing data) "
+             "Be concise. No need to list every record — the table shows that."}
         ] + history + [
-            {"role": "user", "content": f"Data:\n{ctx}\n\nQuestion: {question}"}
+            {"role": "user",
+             "content": f"Question: {question}\n\nData:\n{ctx}"}
         ],
-        "max_tokens": 1024,
+        "max_tokens": 512,
         "temperature": 0.2
     }).encode("utf-8")
 
@@ -91,22 +101,17 @@ def ask_groq(question, docs, history):
             method="POST"
         )
         with urllib.request.urlopen(req, timeout=30, context=ctx_ssl) as r:
-            print(f"Groq status: {r.status}")
             return json.loads(r.read())["choices"][0]["message"]["content"]
     except urllib.error.HTTPError as e:
         body = e.read().decode("utf-8", errors="replace")
-        print(f"Groq HTTP error {e.code}: {body}")
         raise Exception(f"Groq error {e.code}: {body[:200]}")
     except urllib.error.URLError as e:
-        print(f"Groq URL error: {e.reason}")
         raise Exception(f"Cannot reach Groq: {e.reason}")
 
 
 def lambda_handler(event, context):
-    # No CORS headers here — Lambda Function URL config handles all CORS
     method = event.get("requestContext", {}).get("http", {}).get("method", "")
 
-    # OPTIONS preflight — return empty 200 (Function URL adds CORS headers)
     if method == "OPTIONS":
         return {"statusCode": 200, "body": ""}
 
@@ -116,7 +121,7 @@ def lambda_handler(event, context):
         body = {}
 
     msg     = body.get("message", "").strip()
-    history = body.get("history", [])[-10:]
+    history = body.get("history", [])[-6:]
 
     if msg == "ping":
         _load()
@@ -128,8 +133,15 @@ def lambda_handler(event, context):
                 "body": json.dumps({"error": "No message"})}
 
     try:
-        docs   = retrieve(msg)
-        answer = ask_groq(msg, docs, history)
+        docs    = retrieve(msg)
+        summary = ask_groq(msg, docs, history)
+
+        # Return raw records (all columns) + AI summary separately
+        raw_records = [
+            {col: r.get(col, "") for col in COLUMNS}
+            for r in docs if r
+        ]
+
     except Exception as e:
         print(f"Error: {e}")
         return {"statusCode": 500,
@@ -137,14 +149,16 @@ def lambda_handler(event, context):
 
     h2 = (history + [
         {"role": "user",      "content": msg},
-        {"role": "assistant", "content": answer}
-    ])[-10:]
+        {"role": "assistant", "content": summary}
+    ])[-6:]
 
     return {
         "statusCode": 200,
         "body": json.dumps({
-            "reply":     answer,
-            "history":   h2,
-            "retrieved": len(docs)
+            "summary":     summary,      # AI summary (short)
+            "records":     raw_records,  # Full raw data table
+            "columns":     COLUMNS,      # Column headers
+            "retrieved":   len(docs),
+            "history":     h2
         })
     }
