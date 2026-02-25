@@ -1,21 +1,22 @@
 # build_index_lambda.py
-# Reservoir sampling — each bucket capped at fixed size from the start
-# Never accumulates more than MAX_ROWS rows in RAM at any time
-# Peak RAM: ~500MB for 200K rows
+# Builds FAISS index + SAP ID lookup map for instant exact lookups
 
 import boto3, json, faiss, numpy as np, pickle
 import gc, re, math, hashlib, io, random
-from collections import Counter
+from collections import Counter, defaultdict
 
 BUCKET      = "chatbot-input-database"
 BASE_PREFIX = "processed/"
 INDEX_KEY   = "rag-index/faiss.index"
 IDF_KEY     = "rag-model/idf.pkl"
 META_KEY    = "rag-index/metadata.pkl"
+SAP_MAP_KEY = "rag-index/sap_map.pkl"   # NEW: SAP ID -> list of row dicts
 
-MAX_ROWS  = 200000   # total rows to index
+MAX_ROWS  = 200000
 DIM       = 384
 IDF_TOP   = 30000
+CAP_A     = 150000
+CAP_B     =  50000
 
 COLUMNS = [
     "State","SAP ID","Sector Id","Bands",
@@ -49,7 +50,7 @@ def has_alarm(row):
 
 
 def tokenize(text):
-    return [w for w in re.sub(r'[^a-z0-9\s]',' ',text.lower()).split() if len(w)>1]
+    return [w for w in re.sub(r"[^a-z0-9\s]"," ",text.lower()).split() if len(w)>1]
 
 
 def hash_tok(t):
@@ -77,42 +78,37 @@ def iter_all_rows(idx_meta):
 def lambda_handler(event, context):
     idx_meta = load_json(f"{BASE_PREFIX}index.json")
 
-    # ── Reservoir sampling — fixed-size buckets ───────────────────────────────
-    # Bucket A: rows WITH alarms    (cap: 150K)
-    # Bucket B: rows WITHOUT alarms (cap:  50K)
-    # Using reservoir sampling so bucket never exceeds cap
-    # RAM = cap_A × row_size + cap_B × row_size ← fixed, never grows
-
-    CAP_A = 150000   # alarm rows
-    CAP_B =  50000   # non-alarm rows
-
-    bucket_a  = []   # alarm rows     — reservoir
-    bucket_b  = []   # no-alarm rows  — reservoir
-    count_a   = 0    # total alarm rows seen
-    count_b   = 0    # total non-alarm rows seen
+    bucket_a  = []
+    bucket_b  = []
+    count_a   = 0
+    count_b   = 0
     doc_freq  = Counter()
     total     = 0
+    # SAP map: sap_id -> list of full row dicts (ALL rows, not just sampled)
+    sap_map   = defaultdict(list)
 
-    print("Pass 1: reservoir sampling + IDF counting...")
+    print("Pass 1: sampling + IDF + building SAP map...")
 
     for row in iter_all_rows(idx_meta):
         total += 1
         text  = row_to_text(row)
-
-        # IDF counting — stream, no accumulation
         doc_freq.update(set(tokenize(text)))
 
         entry = {c: row.get(c,"") for c in COLUMNS}
         entry["_text"] = text
 
+        # Build SAP map for ALL rows (not just sampled)
+        sap_id = row.get("SAP ID","").strip()
+        if sap_id:
+            sap_map[sap_id].append({c: row.get(c,"") for c in COLUMNS})
+
+        # Reservoir sampling for FAISS
         if has_alarm(row):
             count_a += 1
-            # Reservoir sampling for bucket A
             if len(bucket_a) < CAP_A:
                 bucket_a.append(entry)
             else:
-                # Replace random element with decreasing probability
-                r = random.randint(0, count_a - 1)
+                r = random.randint(0, count_a-1)
                 if r < CAP_A:
                     bucket_a[r] = entry
         else:
@@ -120,109 +116,83 @@ def lambda_handler(event, context):
             if len(bucket_b) < CAP_B:
                 bucket_b.append(entry)
             else:
-                r = random.randint(0, count_b - 1)
+                r = random.randint(0, count_b-1)
                 if r < CAP_B:
                     bucket_b[r] = entry
 
         if total % 300000 == 0:
-            print(f"  Scanned {total:,} | "
-                  f"alarm_bucket={len(bucket_a):,}/{CAP_A} "
-                  f"other_bucket={len(bucket_b):,}/{CAP_B}")
+            print(f"  {total:,} rows | SAP IDs: {len(sap_map):,} | "
+                  f"alarm_bucket={len(bucket_a):,} other={len(bucket_b):,}")
             gc.collect()
 
-    print(f"Scan done: {total:,} rows | "
-          f"alarm rows: {count_a:,} | other: {count_b:,}")
-    print(f"Sampled: {len(bucket_a):,} alarm + {len(bucket_b):,} other "
-          f"= {len(bucket_a)+len(bucket_b):,} total")
+    print(f"Done: {total:,} rows | unique SAP IDs: {len(sap_map):,}")
 
-    # Merge buckets
-    selected = bucket_a + bucket_b
+    # Save SAP map to S3
+    print("Saving SAP map to S3...")
+    buf = io.BytesIO()
+    pickle.dump(dict(sap_map), buf)
+    s3.put_object(Bucket=BUCKET, Key=SAP_MAP_KEY, Body=buf.getvalue())
+    print(f"SAP map saved: {len(sap_map):,} unique SAP IDs")
+    del sap_map
+    gc.collect()
+
+    # Merge FAISS sample
+    selected = (bucket_a + bucket_b)[:MAX_ROWS]
     del bucket_a, bucket_b
     gc.collect()
-    print(f"Selected {len(selected):,} rows for indexing")
+    print(f"FAISS sample: {len(selected):,} rows")
 
-    # ── Build IDF ─────────────────────────────────────────────────────────────
-    print("Building IDF...")
+    # Build IDF
     N   = total
-    idf = {
-        w: math.log((N+1)/(c+1))+1.0
-        for w,c in doc_freq.most_common(IDF_TOP)
-    }
+    idf = {w: math.log((N+1)/(c+1))+1.0 for w,c in doc_freq.most_common(IDF_TOP)}
     del doc_freq
     gc.collect()
-
     buf = io.BytesIO()
     pickle.dump(idf, buf)
     s3.put_object(Bucket=BUCKET, Key=IDF_KEY, Body=buf.getvalue())
     print(f"IDF saved: {len(idf):,} terms")
 
-    # ── Build FAISS — train then add in batches ───────────────────────────────
-    print("Pass 2: embedding + building FAISS index...")
-
+    # Build FAISS
+    print("Building FAISS index...")
     nlist     = 200
     quantizer = faiss.IndexFlatL2(DIM)
     faiss_idx = faiss.IndexIVFFlat(quantizer, DIM, nlist)
-    metadata  = []
     BATCH     = 1000
+    metadata  = []
 
-    # Train on a 10K sample
     TRAIN_N    = min(10000, len(selected))
+    train_vecs = np.array([text_to_vec(r["_text"],idf) for r in selected[:TRAIN_N]], dtype=np.float32)
     print(f"Training IVF on {TRAIN_N:,} vectors...")
-    train_vecs = np.array(
-        [text_to_vec(r["_text"], idf) for r in selected[:TRAIN_N]],
-        dtype=np.float32
-    )
     faiss_idx.train(train_vecs)
     del train_vecs
     gc.collect()
-    print("IVF trained")
 
-    # Add in batches
     for start in range(0, len(selected), BATCH):
-        batch = selected[start : start+BATCH]
-        vecs  = np.array(
-            [text_to_vec(r["_text"], idf) for r in batch],
-            dtype=np.float32
-        )
+        batch = selected[start:start+BATCH]
+        vecs  = np.array([text_to_vec(r["_text"],idf) for r in batch], dtype=np.float32)
         faiss_idx.add(vecs)
         for r in batch:
             metadata.append({c: r.get(c,"") for c in COLUMNS})
         del vecs, batch
         gc.collect()
-        if (start // BATCH) % 50 == 0:
-            done = min(start+BATCH, len(selected))
-            print(f"  Embedded {done:,}/{len(selected):,}")
+        if (start//BATCH) % 50 == 0:
+            print(f"  Embedded {min(start+BATCH,len(selected)):,}/{len(selected):,}")
 
     faiss_idx.nprobe = 20
     print(f"FAISS built: {faiss_idx.ntotal:,} vectors")
 
-    # ── Save to S3 ────────────────────────────────────────────────────────────
-    print("Saving FAISS index...")
     faiss.write_index(faiss_idx, "/tmp/faiss.index")
     s3.upload_file("/tmp/faiss.index", BUCKET, INDEX_KEY)
     del faiss_idx
     gc.collect()
 
-    print("Saving metadata...")
     buf = io.BytesIO()
     pickle.dump(metadata, buf)
     s3.put_object(Bucket=BUCKET, Key=META_KEY, Body=buf.getvalue())
     del metadata
     gc.collect()
 
-    s3.put_object(
-        Bucket=BUCKET, Key="rag-index/manifest.json",
-        Body=json.dumps({
-            "total_scanned": total,
-            "alarm_rows_seen": count_a,
-            "other_rows_seen": count_b,
-            "indexed": len(selected)
-        }).encode()
-    )
-
     return {
         "statusCode": 200,
-        "body": (f"Scanned {total:,} rows. "
-                 f"Indexed {len(selected):,} rows "
-                 f"({count_a:,} had alarms, sampled 150K of those).")
+        "body": f"Indexed {len(selected):,} rows. SAP map: {total:,} rows across all SAP IDs."
     }
