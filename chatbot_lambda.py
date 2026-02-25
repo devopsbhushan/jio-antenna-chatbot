@@ -52,24 +52,23 @@ def encode(text):
     return vec.reshape(1, -1)
 
 
-def retrieve(query, top_k=50):
-    _load()
-    _, I = _index.search(encode(query), top_k)
-    return [_meta[i] for i in I[0] if i != -1 and i < len(_meta)]
-
-
 def extract_sap_id(msg):
-    # Match SAP ID pattern e.g. I-MH-TTWL-ENB-0001
     m = re.search(r"I-[A-Z]{2}-[A-Z0-9]+-ENB-[0-9A-Z]+", msg.upper())
     return m.group(0) if m else None
 
 
-def filter_records(docs, sap_id):
-    # If SAP ID found in question — show ONLY that SAP ID rows
-    if sap_id:
-        filtered = [r for r in docs if r.get("SAP ID", "").upper() == sap_id.upper()]
-        return filtered if filtered else docs  # fallback if no exact match
-    return docs
+def search_metadata_by_sap(sap_id):
+    """Scan full metadata to find ALL rows for a SAP ID — not limited by FAISS sampling."""
+    _load()
+    results = [r for r in _meta if r.get("SAP ID", "").upper() == sap_id.upper()]
+    return results
+
+
+def retrieve_semantic(query, top_k=20):
+    """FAISS semantic search for general questions."""
+    _load()
+    _, I = _index.search(encode(query), top_k)
+    return [_meta[i] for i in I[0] if i != -1 and i < len(_meta)]
 
 
 def ask_groq(question, docs, history, sap_id=None):
@@ -87,23 +86,28 @@ def ask_groq(question, docs, history, sap_id=None):
     state = docs[0].get("State", "N/A") if docs else "N/A"
     site  = sap_id or "this site"
 
-    system = (
-        "You are a Jio antenna inventory assistant. "
-        "Write a site report in this exact format:\n"
-        f"Site: {site} | State: {state}\n\n"
-        "Then list each sector-band combination with:\n"
-        "- Sector X | Band Y | Antenna: [model] | Alarm: [alarm or None]\n\n"
-        "End with a 1-line summary of total sectors and alarm count. "
-        "Be concise. Only use the data provided."
-    )
+    if sap_id:
+        system = (
+            "You are a Jio antenna inventory assistant. "
+            f"Write a site report for Site: {site} | State: {state}\n\n"
+            "List each sector-band combination:\n"
+            "- Sector X | Band Y | Antenna: [model] | Alarm: [alarm or None]\n\n"
+            "End with: Total X sectors, Y alarms active. "
+            "Only use provided data."
+        )
+    else:
+        system = (
+            "You are a Jio antenna inventory assistant. "
+            "Write a SHORT 3-5 line summary answering the question. "
+            "Highlight key patterns: common alarms, states, bands. "
+            "Be concise — the user sees the full table separately."
+        )
 
     payload = json.dumps({
         "model": "llama-3.1-8b-instant",
-        "messages": [
-            {"role": "system", "content": system}
-        ] + history + [
-            {"role": "user", "content": f"Question: {question}\n\nAntenna records:\n{ctx}"}
-        ],
+        "messages": [{"role": "system", "content": system}]
+            + history
+            + [{"role": "user", "content": f"Question: {question}\n\nData:\n{ctx}"}],
         "max_tokens": 512,
         "temperature": 0.1
     }).encode("utf-8")
@@ -149,14 +153,23 @@ def lambda_handler(event, context):
         return {"statusCode": 400, "body": json.dumps({"error": "No message"})}
 
     try:
-        sap_id  = extract_sap_id(msg)
-        docs    = retrieve(msg, top_k=50)
-        filtered = filter_records(docs, sap_id)
-        summary  = ask_groq(msg, filtered, history, sap_id)
+        sap_id = extract_sap_id(msg)
+
+        if sap_id:
+            # Exact SAP ID query — scan full metadata for ALL matching rows
+            docs = search_metadata_by_sap(sap_id)
+            if not docs:
+                # SAP ID not in indexed metadata — fallback to FAISS
+                docs = retrieve_semantic(msg, top_k=20)
+        else:
+            # General question — use FAISS semantic search
+            docs = retrieve_semantic(msg, top_k=20)
+
+        summary = ask_groq(msg, docs, history, sap_id)
 
         raw_records = [
             {col: r.get(col, "") for col in COLUMNS}
-            for r in filtered
+            for r in docs
         ]
 
     except Exception as e:
@@ -174,7 +187,7 @@ def lambda_handler(event, context):
             "summary":   summary,
             "records":   raw_records,
             "columns":   COLUMNS,
-            "retrieved": len(filtered),
+            "retrieved": len(docs),
             "history":   h2
         })
     }
