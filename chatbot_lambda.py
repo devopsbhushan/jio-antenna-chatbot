@@ -10,8 +10,10 @@ GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 DIM      = 384
 
 s3 = boto3.client("s3")
-_index = _idf = _meta = None
-_sap_index = None   # SAP ID -> list of S3 keys + row offsets
+_index   = None
+_idf     = None
+_meta    = None
+_sap_map = None   # SAP ID -> list of row dicts (instant lookup)
 
 COLUMNS = [
     "State", "SAP ID", "Sector Id", "Bands",
@@ -20,10 +22,9 @@ COLUMNS = [
     "Antenna Classification", "RRH Last Updated Time",
     "Alarm details"
 ]
-BASE_PREFIX = "processed/"
 
 
-def _load():
+def _load_base():
     global _index, _idf, _meta
     if _index is None:
         s3.download_file(BUCKET, "rag-index/faiss.index", "/tmp/faiss.index")
@@ -36,6 +37,15 @@ def _load():
     if _meta is None:
         obj   = s3.get_object(Bucket=BUCKET, Key="rag-index/metadata.pkl")
         _meta = pickle.loads(obj["Body"].read())
+
+
+def _load_sap_map():
+    global _sap_map
+    if _sap_map is None:
+        print("Loading SAP map...")
+        obj      = s3.get_object(Bucket=BUCKET, Key="rag-index/sap_map.pkl")
+        _sap_map = pickle.loads(obj["Body"].read())
+        print(f"SAP map loaded: {len(_sap_map):,} unique SAP IDs")
 
 
 def tokenize(t):
@@ -59,46 +69,8 @@ def extract_sap_id(msg):
     return m.group(0) if m else None
 
 
-def fetch_sap_from_s3(sap_id):
-    """
-    Scan S3 source chunks directly to find ALL rows for a SAP ID.
-    Reads index.json to find which state this SAP belongs to,
-    then scans only that state chunks — much faster than full scan.
-    """
-    # Load index manifest
-    obj      = s3.get_object(Bucket=BUCKET, Key=f"{BASE_PREFIX}index.json")
-    idx_meta = json.loads(obj["Body"].read())
-
-    # Determine state prefix from SAP ID e.g. I-MH-... -> MH -> MAHARASHTRA
-    # Try to find state by scanning index keys
-    results = []
-
-    for state, meta in idx_meta["states"].items():
-        # Quick check: does this state prefix match SAP state code?
-        sap_state_code = sap_id.split("-")[1].upper() if "-" in sap_id else ""
-
-        # Scan all chunks for this state
-        for i in range(1, meta["chunks"] + 1):
-            key = f"{BASE_PREFIX}{state}/chunk_{i:04d}.json"
-            try:
-                obj  = s3.get_object(Bucket=BUCKET, Key=key)
-                rows = json.loads(obj["Body"].read())
-                for row in rows:
-                    if row.get("SAP ID", "").upper() == sap_id.upper():
-                        row["State"] = state
-                        results.append({col: row.get(col, "") for col in COLUMNS})
-            except Exception:
-                continue
-
-        if results:
-            # Found records in this state — no need to scan other states
-            break
-
-    return results
-
-
 def retrieve_semantic(query, top_k=20):
-    _load()
+    _load_base()
     _, I = _index.search(encode(query), top_k)
     return [_meta[i] for i in I[0] if i != -1 and i < len(_meta)]
 
@@ -114,15 +86,14 @@ def ask_groq(question, docs, history, sap_id=None):
         f"Updated:{r.get('RRH Last Updated Time','N/A')}"
         for r in docs if r
     ])
-
-    state = docs[0].get("State", "N/A") if docs else "N/A"
+    state = docs[0].get("State","N/A") if docs else "N/A"
     site  = sap_id or "this site"
 
     if sap_id:
         system = (
             "You are a Jio antenna inventory assistant. "
             f"Write a site report for Site: {site} | State: {state}\n\n"
-            "List each sector-band combination like:\n"
+            "List each sector-band combination:\n"
             "- Sector X | Band Y | Antenna: [model] | Alarm: [alarm or None]\n\n"
             "End with: Total X sectors, Y alarms active."
         )
@@ -130,7 +101,7 @@ def ask_groq(question, docs, history, sap_id=None):
         system = (
             "You are a Jio antenna inventory assistant. "
             "Write a SHORT 3-5 line summary answering the question. "
-            "Highlight key patterns: common alarms, states, bands. "
+            "Highlight key patterns: alarms, states, bands. "
             "Be concise — user sees full table separately."
         )
 
@@ -177,7 +148,7 @@ def lambda_handler(event, context):
     history = body.get("history", [])[-6:]
 
     if msg == "ping":
-        _load()
+        _load_base()
         return {"statusCode": 200, "body": json.dumps({"reply": "warm"})}
 
     if not msg:
@@ -187,15 +158,15 @@ def lambda_handler(event, context):
         sap_id = extract_sap_id(msg)
 
         if sap_id:
-            # Fetch ALL records directly from S3 source chunks
-            print(f"SAP ID query: {sap_id} — scanning S3 source data")
-            docs = fetch_sap_from_s3(sap_id)
-            print(f"Found {len(docs)} records for {sap_id}")
+            # Instant lookup from SAP map — no S3 scanning needed
+            _load_sap_map()
+            docs = _sap_map.get(sap_id, [])
+            print(f"SAP map lookup: {sap_id} -> {len(docs)} records")
             if not docs:
                 return {
                     "statusCode": 200,
                     "body": json.dumps({
-                        "summary":   f"No records found for SAP ID {sap_id} in the database.",
+                        "summary":   f"No records found for SAP ID {sap_id}.",
                         "records":   [],
                         "columns":   COLUMNS,
                         "retrieved": 0,
@@ -203,12 +174,11 @@ def lambda_handler(event, context):
                     })
                 }
         else:
-            # General question — semantic FAISS search
-            _load()
+            # Semantic FAISS search for general questions
             docs = retrieve_semantic(msg, top_k=20)
 
-        summary = ask_groq(msg, docs, history, sap_id)
-        raw_records = [{col: r.get(col, "") for col in COLUMNS} for r in docs]
+        summary     = ask_groq(msg, docs, history, sap_id)
+        raw_records = [{col: r.get(col,"") for col in COLUMNS} for r in docs]
 
     except Exception as e:
         print(f"Error: {e}")
