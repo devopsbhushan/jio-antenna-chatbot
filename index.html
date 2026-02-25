@@ -6,173 +6,114 @@
   <title>Jio Antenna Chatbot</title>
   <style>
     * { box-sizing: border-box; margin: 0; padding: 0; }
-    body {
-      font-family: 'Segoe UI', Arial, sans-serif;
-      background: #f0f2f5;
-      display: flex; flex-direction: column; height: 100vh; overflow: hidden;
-    }
-    .header {
-      background: linear-gradient(135deg, #d50000, #b71c1c);
-      color: white; padding: 14px 20px;
-      display: flex; align-items: center; gap: 12px;
-      box-shadow: 0 2px 8px rgba(0,0,0,0.2); flex-shrink: 0;
-    }
-    .header-icon {
-      width: 38px; height: 38px; background: rgba(255,255,255,0.2);
-      border-radius: 50%; display: flex; align-items: center;
-      justify-content: center; font-size: 20px;
-    }
+    body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5;
+           display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+    .header { background: linear-gradient(135deg, #d50000, #b71c1c); color: white;
+              padding: 14px 20px; display: flex; align-items: center; gap: 12px;
+              box-shadow: 0 2px 8px rgba(0,0,0,0.2); flex-shrink: 0; }
+    .hicon { width: 38px; height: 38px; background: rgba(255,255,255,0.2);
+             border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; }
     .header h1 { font-size: 17px; font-weight: 700; }
     .header p  { font-size: 12px; opacity: 0.85; margin-top: 2px; }
-    .dot {
-      width: 9px; height: 9px; background: #69f0ae; border-radius: 50%;
-      margin-left: auto; box-shadow: 0 0 6px #69f0ae; animation: pulse 2s infinite;
-    }
+    .dot { width: 9px; height: 9px; background: #69f0ae; border-radius: 50%;
+           margin-left: auto; box-shadow: 0 0 6px #69f0ae; animation: pulse 2s infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
-    #chat {
-      flex: 1; overflow-y: auto; padding: 16px;
-      display: flex; flex-direction: column; gap: 14px;
-    }
+    #chat { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
 
-    /* ── User bubble ── */
     .user-wrap { display: flex; justify-content: flex-end; }
-    .user-bubble {
-      background: #1565c0; color: white;
-      padding: 10px 16px; border-radius: 16px 16px 4px 16px;
-      font-size: 14px; max-width: 70%; line-height: 1.5;
-    }
+    .user-bubble { background: #1565c0; color: white; padding: 10px 16px;
+                   border-radius: 16px 16px 4px 16px; font-size: 14px; max-width: 70%; line-height: 1.5; }
 
-    /* ── Bot response card ── */
-    .bot-card {
-      background: white; border-radius: 12px;
-      box-shadow: 0 1px 8px rgba(0,0,0,0.08);
-      overflow: hidden; animation: fi 0.2s ease;
-    }
+    .bot-card { background: white; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+                overflow: hidden; animation: fi 0.2s ease; }
     @keyframes fi { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
 
-    /* AI Summary section */
-    .summary-section {
-      padding: 14px 16px;
-      border-bottom: 1px solid #f0f0f0;
-      background: #fafafa;
-    }
-    .summary-label {
-      font-size: 11px; font-weight: 700; color: #d50000;
-      text-transform: uppercase; letter-spacing: 0.5px; margin-bottom: 6px;
-    }
-    .summary-text {
-      font-size: 14px; color: #1a1a2e; line-height: 1.6; white-space: pre-wrap;
-    }
+    .summary-section { padding: 14px 16px; background: #fff8f8; border-bottom: 2px solid #ffcdd2; }
+    .section-label { font-size: 11px; font-weight: 700; text-transform: uppercase;
+                     letter-spacing: 0.6px; margin-bottom: 6px; }
+    .summary-section .section-label { color: #c62828; }
+    .summary-text { font-size: 14px; color: #1a1a2e; line-height: 1.7; white-space: pre-wrap; }
 
-    /* Raw data table section */
     .table-section { overflow-x: auto; }
-    .table-header {
-      padding: 10px 16px;
-      display: flex; align-items: center; justify-content: space-between;
-      background: #f5f5f5; border-bottom: 1px solid #e0e0e0;
-    }
-    .table-label {
-      font-size: 11px; font-weight: 700; color: #555;
-      text-transform: uppercase; letter-spacing: 0.5px;
-    }
-    .table-count {
-      font-size: 11px; color: #888;
-    }
-    table {
-      width: 100%; border-collapse: collapse; font-size: 12px;
-      min-width: 900px;
-    }
-    th {
-      background: #1565c0; color: white;
-      padding: 8px 10px; text-align: left;
-      font-weight: 600; white-space: nowrap;
-      position: sticky; top: 0;
-    }
-    td {
-      padding: 7px 10px; border-bottom: 1px solid #f0f0f0;
-      color: #333; max-width: 180px;
-      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-    }
-    td.empty { color: #bbb; font-style: italic; }
-    tr:hover td { background: #f0f7ff; }
-    tr:nth-child(even) td { background: #fafafa; }
-    tr:nth-child(even):hover td { background: #f0f7ff; }
+    .table-header { padding: 8px 16px; display: flex; align-items: center;
+                    justify-content: space-between; background: #e8f0fe; border-bottom: 1px solid #c5d8fb; }
+    .table-header .section-label { color: #1565c0; }
+    .rec-count { font-size: 12px; color: #1565c0; font-weight: 600; }
 
-    /* alarm highlight */
-    td.alarm { color: #c62828; font-weight: 600; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 1000px; }
+    thead th { background: #1565c0; color: white; padding: 9px 12px;
+               text-align: left; font-weight: 600; white-space: nowrap;
+               border-right: 1px solid rgba(255,255,255,0.15); }
+    thead th:last-child { border-right: none; }
+    tbody tr:nth-child(even) { background: #f8f9ff; }
+    tbody tr:hover td { background: #e8f0fe !important; }
+    tbody td { padding: 8px 12px; border-bottom: 1px solid #eee;
+               border-right: 1px solid #f0f0f0; color: #333;
+               max-width: 200px; white-space: nowrap;
+               overflow: hidden; text-overflow: ellipsis; }
+    tbody td:last-child { border-right: none; }
+    tbody td.na { color: #bbb; font-style: italic; }
+    tbody td.alarm-cell { color: #c62828; font-weight: 700; background: #fff8f8 !important; }
+    tbody td.ok-cell { color: #2e7d32; }
 
-    /* ── Welcome card ── */
-    .welcome {
-      background: white; border-radius: 12px;
-      padding: 18px; box-shadow: 0 1px 8px rgba(0,0,0,0.08);
-    }
+    .no-records { padding: 20px; text-align: center; color: #888; font-style: italic; }
+
+    .welcome { background: white; border-radius: 12px; padding: 18px;
+               box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
     .welcome p { font-size: 14px; color: #333; line-height: 1.6; }
     .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
-    .chip {
-      background: #e8f0fe; color: #1565c0; border: 1px solid #c5d8fb;
-      border-radius: 20px; padding: 6px 14px; font-size: 12px;
-      cursor: pointer; transition: all 0.15s;
-    }
+    .chip { background: #e8f0fe; color: #1565c0; border: 1px solid #c5d8fb;
+            border-radius: 20px; padding: 6px 14px; font-size: 12px; cursor: pointer; transition: all 0.15s; }
     .chip:hover { background: #1565c0; color: white; }
 
-    /* typing indicator */
-    .typing-card {
-      background: white; border-radius: 12px; padding: 14px 16px;
-      box-shadow: 0 1px 8px rgba(0,0,0,0.08);
-      font-size: 13px; color: #888; font-style: italic;
-    }
+    .typing-card { background: white; border-radius: 12px; padding: 16px;
+                   box-shadow: 0 2px 10px rgba(0,0,0,0.08); color: #888;
+                   font-size: 13px; font-style: italic; display: flex; align-items: center; gap: 10px; }
+    .spinner { width: 16px; height: 16px; border: 2px solid #e0e0e0;
+               border-top-color: #d50000; border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
+    @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* ── Input bar ── */
-    .bar {
-      background: white; border-top: 1px solid #e0e0e0; flex-shrink: 0;
-      padding: 12px 16px; display: flex; gap: 8px; align-items: center;
-    }
-    #inp {
-      flex: 1; padding: 10px 16px; border: 1.5px solid #e0e0e0;
-      border-radius: 24px; font-size: 14px; outline: none; font-family: inherit;
-      transition: border-color 0.2s;
-    }
+    .bar { background: white; border-top: 1px solid #e0e0e0; flex-shrink: 0;
+           padding: 12px 16px; display: flex; gap: 8px; align-items: center; }
+    #inp { flex: 1; padding: 10px 16px; border: 1.5px solid #e0e0e0;
+           border-radius: 24px; font-size: 14px; outline: none; font-family: inherit; transition: border-color 0.2s; }
     #inp:focus { border-color: #1565c0; }
-    #sendBtn {
-      padding: 10px 22px; background: #d50000; color: white;
-      border: none; border-radius: 24px; font-size: 14px; font-weight: 600;
-      cursor: pointer; min-width: 70px; transition: background 0.2s;
-    }
+    #sendBtn { padding: 10px 22px; background: #d50000; color: white; border: none;
+               border-radius: 24px; font-size: 14px; font-weight: 600; cursor: pointer;
+               min-width: 70px; transition: background 0.2s; }
     #sendBtn:hover { background: #b71c1c; }
-    #clearBtn {
-      padding: 10px 14px; background: #f5f5f5; color: #666;
-      border: none; border-radius: 24px; font-size: 13px; cursor: pointer;
-    }
+    #clearBtn { padding: 10px 14px; background: #f5f5f5; color: #666;
+                border: none; border-radius: 24px; font-size: 13px; cursor: pointer; }
     #clearBtn:hover { background: #e0e0e0; }
   </style>
 </head>
 <body>
 
 <div class="header">
-  <div class="header-icon">📡</div>
+  <div class="hicon">📡</div>
   <div>
     <h1>Jio Antenna RAG Chatbot</h1>
-    <p>Llama 3.1 · FAISS · 134,843 records indexed</p>
+    <p>Llama 3.1 · FAISS · 3M records · Instant SAP lookup</p>
   </div>
   <div class="dot"></div>
 </div>
 
 <div id="chat">
   <div class="welcome">
-    <p>👋 Hello! Ask me anything about Jio antenna inventory. I'll show you the raw data table + an AI summary for every query.</p>
+    <p>👋 Hello! Ask me anything about Jio antenna inventory. Type a SAP ID for instant full record lookup, or ask a general question.</p>
     <div class="chips">
+      <span class="chip" onclick="qa(this)">Show I-JK-SGAR-ENB-0336</span>
       <span class="chip" onclick="qa(this)">Sites with alarms in Maharashtra</span>
       <span class="chip" onclick="qa(this)">Show VSWR alarm sites</span>
       <span class="chip" onclick="qa(this)">Unidentified antennas band 2100</span>
       <span class="chip" onclick="qa(this)">Sites with missing RET data</span>
-      <span class="chip" onclick="qa(this)">Recent antenna updates</span>
     </div>
   </div>
 </div>
 
 <div class="bar">
-  <input id="inp" placeholder="Ask about SAP IDs, alarms, bands, antenna types..."
+  <input id="inp" placeholder="Enter SAP ID or ask a question..."
     onkeydown="if(event.key==='Enter')send()">
   <button id="sendBtn" onclick="send()">Send</button>
   <button id="clearBtn" onclick="clr()">Clear</button>
@@ -188,12 +129,12 @@
     "Antenna Classification","RRH Last Updated Time","Alarm details"
   ];
 
-  let hist = [];
-  let busy = false;
+  let hist = [], busy = false;
 
-  function qa(el) {
-    document.getElementById('inp').value = el.textContent.trim();
-    send();
+  function qa(el) { document.getElementById('inp').value = el.textContent.trim(); send(); }
+
+  function esc(s) {
+    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
   }
 
   function addUser(msg) {
@@ -203,45 +144,49 @@
   }
 
   function addTyping() {
-    const c  = document.getElementById('chat');
-    const id = 'typing_' + Date.now();
-    c.innerHTML += `<div class="typing-card" id="${id}">🔍 Searching antenna records...</div>`;
-    c.scrollTop  = c.scrollHeight;
+    const c = document.getElementById('chat');
+    const id = 'tp_' + Date.now();
+    c.innerHTML += `<div class="typing-card" id="${id}"><div class="spinner"></div>Searching antenna records...</div>`;
+    c.scrollTop = c.scrollHeight;
     return id;
   }
 
-  function rm(id) { const e = document.getElementById(id); if (e) e.remove(); }
+  function rm(id) { const e=document.getElementById(id); if(e) e.remove(); }
 
   function buildTable(records) {
-    if (!records || records.length === 0) return '<p style="padding:12px;color:#888">No records found.</p>';
-    let rows = records.map(r => {
+    if (!records || records.length === 0)
+      return '<div class="no-records">No records found.</div>';
+
+    const heads = COLS.map(c => `<th title="${esc(c)}">${esc(c)}</th>`).join('');
+    const rows  = records.map(r => {
       const cells = COLS.map(col => {
-        const val = r[col] || '';
-        const isEmpty = !val.trim();
-        const isAlarm = col === 'Alarm details' && val && val.toLowerCase() !== 'none';
-        const cls = isEmpty ? 'empty' : (isAlarm ? 'alarm' : '');
-        return `<td class="${cls}" title="${esc(val)}">${isEmpty ? 'N/A' : esc(val)}</td>`;
+        const val     = (r[col] || '').trim();
+        const isEmpty = !val;
+        const isAlarm = col === 'Alarm details' && val && val.toLowerCase() !== 'none' && val !== '-';
+        const isOk    = col === 'Alarm details' && (!val || val.toLowerCase() === 'none' || val === '-');
+        let cls = isEmpty ? 'na' : (isAlarm ? 'alarm-cell' : (isOk ? 'ok-cell' : ''));
+        const display = isEmpty ? 'N/A' : esc(val);
+        return `<td class="${cls}" title="${esc(val)}">${display}</td>`;
       }).join('');
       return `<tr>${cells}</tr>`;
     }).join('');
-    const headers = COLS.map(c => `<th>${c}</th>`).join('');
-    return `<table><thead><tr>${headers}</tr></thead><tbody>${rows}</tbody></table>`;
+
+    return `<table><thead><tr>${heads}</tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   function addBotCard(summary, records, count) {
     const c   = document.getElementById('chat');
-    const id  = 'card_' + Date.now();
     const tbl = buildTable(records);
     c.innerHTML += `
-      <div class="bot-card" id="${id}">
+      <div class="bot-card">
         <div class="summary-section">
-          <div class="summary-label">🤖 AI Summary</div>
+          <div class="section-label">🤖 AI Summary</div>
           <div class="summary-text">${esc(summary)}</div>
         </div>
         <div class="table-section">
           <div class="table-header">
-            <span class="table-label">📊 Raw Data</span>
-            <span class="table-count">${count} records retrieved</span>
+            <span class="section-label">📊 Raw Data</span>
+            <span class="rec-count">${count} record${count!==1?'s':''} found</span>
           </div>
           ${tbl}
         </div>
@@ -251,14 +196,9 @@
 
   function addError(msg) {
     const c = document.getElementById('chat');
-    c.innerHTML += `<div class="bot-card"><div class="summary-section"><div class="summary-text" style="color:#c62828">⚠ ${esc(msg)}</div></div></div>`;
-    document.getElementById('chat').scrollTop = 99999;
-  }
-
-  function esc(s) {
-    return String(s)
-      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
-      .replace(/>/g,'&gt;').replace(/\n/g,'<br>');
+    c.innerHTML += `<div class="bot-card"><div class="summary-section">
+      <div class="summary-text" style="color:#c62828">⚠ ${esc(msg)}</div></div></div>`;
+    c.scrollTop = c.scrollHeight;
   }
 
   async function send() {
@@ -270,26 +210,24 @@
     inp.value = '';
     addUser(msg);
     busy = true;
-    document.getElementById('sendBtn').textContent = '...';
-    document.getElementById('sendBtn').style.background = '#888';
-
+    const btn = document.getElementById('sendBtn');
+    btn.textContent = '...';
+    btn.style.background = '#888';
     const tid = addTyping();
 
     try {
-      const r = await fetch(API, {
+      const res = await fetch(API, {
         method:  'POST',
         headers: { 'Content-Type': 'application/json' },
         body:    JSON.stringify({ message: msg, history: hist })
       });
       rm(tid);
-
-      if (!r.ok) {
-        addError('Server error ' + r.status + ': ' + await r.text());
+      if (!res.ok) {
+        addError('Server error ' + res.status);
       } else {
-        const d = await r.json();
-        if (d.error) {
-          addError(d.error);
-        } else {
+        const d = await res.json();
+        if (d.error) addError(d.error);
+        else {
           addBotCard(d.summary, d.records, d.retrieved);
           hist = d.history || [];
         }
@@ -300,8 +238,8 @@
     }
 
     busy = false;
-    document.getElementById('sendBtn').textContent  = 'Send';
-    document.getElementById('sendBtn').style.background = '#d50000';
+    btn.textContent = 'Send';
+    btn.style.background = '#d50000';
     inp.focus();
   }
 
@@ -311,10 +249,10 @@
       <div class="welcome">
         <p>Chat cleared. Ask a new question!</p>
         <div class="chips">
+          <span class="chip" onclick="qa(this)">Show I-JK-SGAR-ENB-0336</span>
           <span class="chip" onclick="qa(this)">Sites with alarms in Maharashtra</span>
           <span class="chip" onclick="qa(this)">Show VSWR alarm sites</span>
           <span class="chip" onclick="qa(this)">Unidentified antennas band 2100</span>
-          <span class="chip" onclick="qa(this)">Sites with missing RET data</span>
         </div>
       </div>`;
   }
