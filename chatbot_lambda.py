@@ -11,6 +11,7 @@ DIM      = 384
 
 s3 = boto3.client("s3")
 _index = _idf = _meta = None
+_sap_index = None   # SAP ID -> list of S3 keys + row offsets
 
 COLUMNS = [
     "State", "SAP ID", "Sector Id", "Bands",
@@ -19,6 +20,7 @@ COLUMNS = [
     "Antenna Classification", "RRH Last Updated Time",
     "Alarm details"
 ]
+BASE_PREFIX = "processed/"
 
 
 def _load():
@@ -57,15 +59,45 @@ def extract_sap_id(msg):
     return m.group(0) if m else None
 
 
-def search_metadata_by_sap(sap_id):
-    """Scan full metadata to find ALL rows for a SAP ID — not limited by FAISS sampling."""
-    _load()
-    results = [r for r in _meta if r.get("SAP ID", "").upper() == sap_id.upper()]
+def fetch_sap_from_s3(sap_id):
+    """
+    Scan S3 source chunks directly to find ALL rows for a SAP ID.
+    Reads index.json to find which state this SAP belongs to,
+    then scans only that state chunks — much faster than full scan.
+    """
+    # Load index manifest
+    obj      = s3.get_object(Bucket=BUCKET, Key=f"{BASE_PREFIX}index.json")
+    idx_meta = json.loads(obj["Body"].read())
+
+    # Determine state prefix from SAP ID e.g. I-MH-... -> MH -> MAHARASHTRA
+    # Try to find state by scanning index keys
+    results = []
+
+    for state, meta in idx_meta["states"].items():
+        # Quick check: does this state prefix match SAP state code?
+        sap_state_code = sap_id.split("-")[1].upper() if "-" in sap_id else ""
+
+        # Scan all chunks for this state
+        for i in range(1, meta["chunks"] + 1):
+            key = f"{BASE_PREFIX}{state}/chunk_{i:04d}.json"
+            try:
+                obj  = s3.get_object(Bucket=BUCKET, Key=key)
+                rows = json.loads(obj["Body"].read())
+                for row in rows:
+                    if row.get("SAP ID", "").upper() == sap_id.upper():
+                        row["State"] = state
+                        results.append({col: row.get(col, "") for col in COLUMNS})
+            except Exception:
+                continue
+
+        if results:
+            # Found records in this state — no need to scan other states
+            break
+
     return results
 
 
 def retrieve_semantic(query, top_k=20):
-    """FAISS semantic search for general questions."""
     _load()
     _, I = _index.search(encode(query), top_k)
     return [_meta[i] for i in I[0] if i != -1 and i < len(_meta)]
@@ -90,17 +122,16 @@ def ask_groq(question, docs, history, sap_id=None):
         system = (
             "You are a Jio antenna inventory assistant. "
             f"Write a site report for Site: {site} | State: {state}\n\n"
-            "List each sector-band combination:\n"
+            "List each sector-band combination like:\n"
             "- Sector X | Band Y | Antenna: [model] | Alarm: [alarm or None]\n\n"
-            "End with: Total X sectors, Y alarms active. "
-            "Only use provided data."
+            "End with: Total X sectors, Y alarms active."
         )
     else:
         system = (
             "You are a Jio antenna inventory assistant. "
             "Write a SHORT 3-5 line summary answering the question. "
             "Highlight key patterns: common alarms, states, bands. "
-            "Be concise — the user sees the full table separately."
+            "Be concise — user sees full table separately."
         )
 
     payload = json.dumps({
@@ -156,21 +187,28 @@ def lambda_handler(event, context):
         sap_id = extract_sap_id(msg)
 
         if sap_id:
-            # Exact SAP ID query — scan full metadata for ALL matching rows
-            docs = search_metadata_by_sap(sap_id)
+            # Fetch ALL records directly from S3 source chunks
+            print(f"SAP ID query: {sap_id} — scanning S3 source data")
+            docs = fetch_sap_from_s3(sap_id)
+            print(f"Found {len(docs)} records for {sap_id}")
             if not docs:
-                # SAP ID not in indexed metadata — fallback to FAISS
-                docs = retrieve_semantic(msg, top_k=20)
+                return {
+                    "statusCode": 200,
+                    "body": json.dumps({
+                        "summary":   f"No records found for SAP ID {sap_id} in the database.",
+                        "records":   [],
+                        "columns":   COLUMNS,
+                        "retrieved": 0,
+                        "history":   history
+                    })
+                }
         else:
-            # General question — use FAISS semantic search
+            # General question — semantic FAISS search
+            _load()
             docs = retrieve_semantic(msg, top_k=20)
 
         summary = ask_groq(msg, docs, history, sap_id)
-
-        raw_records = [
-            {col: r.get(col, "") for col in COLUMNS}
-            for r in docs
-        ]
+        raw_records = [{col: r.get(col, "") for col in COLUMNS} for r in docs]
 
     except Exception as e:
         print(f"Error: {e}")
