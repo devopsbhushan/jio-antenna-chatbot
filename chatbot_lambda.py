@@ -287,23 +287,63 @@ def lambda_handler(event, context):
         blank_ret  = is_blank_ret_query(msg)
 
         # ── Blank RET download ──
-        if blank_ret and state_name:
-            docs = get_blank_ret_records(state_name)
-            if not docs:
+        if blank_ret:
+            # Detect "all states" request
+            all_states_requested = bool(re.search(
+                r"all.{0,10}state|every.{0,10}state|pan.{0,5}india|all.{0,10}circle",
+                msg, re.IGNORECASE
+            ))
+
+            if all_states_requested:
+                # Collect from all available state SAP files
+                docs = []
+                try:
+                    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=SAP_PREFIX)
+                    state_files = [
+                        o["Key"].replace(SAP_PREFIX,"").replace(".pkl","")
+                        for o in resp.get("Contents",[])
+                        if o["Key"].endswith(".pkl")
+                    ]
+                    print(f"All-states RET: scanning {len(state_files)} states")
+                    for st in state_files:
+                        docs.extend(get_blank_ret_records(st))
+                        print(f"  {st}: running total {len(docs)}")
+                except Exception as e:
+                    print(f"All-states error: {e}")
+
+                label    = "All States"
+                filename = "Blank_RET_All_States.xlsx"
+
+            elif state_name:
+                docs     = get_blank_ret_records(state_name)
+                label    = state_name
+                filename = f"Blank_RET_{state_name}.xlsx"
+            else:
                 return {"statusCode": 200, "body": json.dumps({
-                    "summary":   f"No blank RET records found in {state_name}.",
+                    "summary":   "Please specify a state name or 'all states'. E.g. 'blank RET data for Maharashtra'",
                     "records":   [], "columns": COLUMNS,
                     "retrieved": 0,  "history": history,
                     "download":  False
                 })}
+
+            if not docs:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary":   f"No blank RET records found for {label}.",
+                    "records":   [], "columns": COLUMNS,
+                    "retrieved": 0,  "history": history,
+                    "download":  False
+                })}
+
             return {"statusCode": 200, "body": json.dumps({
-                "summary":    f"Found {len(docs):,} records in {state_name} with blank RRH Connect Board ID, RRH Connect Port ID and Antenna Classification.",
-                "records":    docs,
-                "columns":    COLUMNS,
-                "retrieved":  len(docs),
-                "history":    history,
-                "download":   True,          # tells UI to auto-download Excel
-                "filename":   f"Blank_RET_{state_name}.xlsx"
+                "summary":   f"Found {len(docs):,} blank RET records for {label}. Excel downloading now.",
+                "records":   docs,
+                "columns":   COLUMNS,
+                "retrieved": len(docs),
+                "history":   history,
+                "download":  True,
+                "excel":     True,
+                "state":     label,
+                "filename":  filename
             })}
 
         # ── SAP ID lookup ──
