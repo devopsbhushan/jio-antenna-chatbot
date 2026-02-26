@@ -9,7 +9,6 @@
     body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5;
            display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
 
-    /* Header */
     .header { background: linear-gradient(135deg, #d50000, #b71c1c); color: white;
               padding: 14px 20px; display: flex; align-items: center; gap: 12px;
               box-shadow: 0 2px 8px rgba(0,0,0,0.25); flex-shrink: 0; }
@@ -22,28 +21,25 @@
            margin-left: auto; box-shadow: 0 0 8px #69f0ae; animation: pulse 2s infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
-    /* Chat area */
     #chat { flex: 1; overflow-y: auto; padding: 16px;
             display: flex; flex-direction: column; gap: 14px; }
 
-    /* User bubble */
     .user-wrap { display: flex; justify-content: flex-end; }
     .user-bubble { background: #1565c0; color: white; padding: 10px 16px;
                    border-radius: 16px 16px 4px 16px; font-size: 14px;
-                   max-width: 70%; line-height: 1.5; }
+                   max-width: 70%; line-height: 1.5; word-break: break-word; }
 
-    /* Bot card */
     .bot-card { background: white; border-radius: 12px;
-                box-shadow: 0 2px 12px rgba(0,0,0,0.1);
-                overflow: hidden; animation: fi 0.2s ease; }
+                box-shadow: 0 2px 12px rgba(0,0,0,0.1); overflow: hidden;
+                animation: fi 0.2s ease; }
     @keyframes fi { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
 
-    /* AI Summary */
-    .summary-box { padding: 14px 16px; background: #fff8f8;
-                   border-left: 4px solid #d50000; }
+    /* Summary box */
+    .summary-box { padding: 14px 16px; background: #fff8f8; border-left: 4px solid #d50000; }
     .box-label { font-size: 11px; font-weight: 700; text-transform: uppercase;
-                 letter-spacing: 0.6px; margin-bottom: 6px; color: #d50000; }
-    .summary-text { font-size: 14px; color: #222; line-height: 1.7; white-space: pre-wrap; }
+                 letter-spacing: 0.6px; margin-bottom: 8px; }
+    .summary-box .box-label { color: #d50000; }
+    .summary-text { font-size: 13.5px; color: #222; line-height: 1.8; white-space: pre-wrap; }
 
     /* Table section */
     .table-wrap { overflow-x: auto; border-top: 2px solid #e8f0fe; }
@@ -52,46 +48,46 @@
     .table-bar .box-label { color: #1565c0; margin-bottom: 0; }
     .rec-count { font-size: 12px; font-weight: 600; color: #1565c0; }
 
-    /* THE TABLE */
-    table { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 1100px; }
-
+    /* TABLE STYLES - explicit borders everywhere */
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      min-width: 1100px;
+      border: 2px solid #c5cae9;
+    }
     thead tr { background: #1a237e; }
     thead th {
       color: white;
-      padding: 10px 14px;
+      padding: 10px 12px;
       text-align: left;
       font-weight: 600;
       white-space: nowrap;
-      border-right: 1px solid rgba(255,255,255,0.2);
-      letter-spacing: 0.3px;
+      border: 1px solid rgba(255,255,255,0.25);
+      letter-spacing: 0.2px;
+      font-size: 11.5px;
     }
-    thead th:last-child { border-right: none; }
-
     tbody tr:nth-child(odd)  { background: #ffffff; }
     tbody tr:nth-child(even) { background: #f5f7ff; }
-    tbody tr:hover td { background: #dce8ff !important; }
-
+    tbody tr:hover td { background: #dce8ff !important; cursor: default; }
     tbody td {
-      padding: 9px 14px;
+      padding: 8px 12px;
       color: #333;
-      border-right: 1px solid #e8eaf6;
-      border-bottom: 1px solid #eeeeee;
-      max-width: 220px;
+      border: 1px solid #dde2f0;
       white-space: nowrap;
       overflow: hidden;
       text-overflow: ellipsis;
+      max-width: 200px;
       vertical-align: middle;
+      font-size: 12px;
     }
-    tbody td:last-child { border-right: none; }
-
-    /* Cell states */
-    td.na     { color: #bdbdbd; font-style: italic; }
+    td.na     { color: #bdbdbd; font-style: italic; font-size: 11px; }
     td.alarm  { color: #b71c1c; font-weight: 700; background: #ffebee !important; }
     td.ok     { color: #2e7d32; }
-    td.state  { font-weight: 600; color: #1565c0; }
-    td.sapid  { font-family: monospace; font-size: 11.5px; color: #37474f; }
+    td.state  { font-weight: 600; color: #283593; }
+    td.sapid  { font-family: 'Courier New', monospace; font-size: 11px; color: #37474f; font-weight: 600; }
 
-    .no-data { padding: 24px; text-align: center; color: #9e9e9e; font-style: italic; }
+    .no-data { padding: 24px; text-align: center; color: #9e9e9e; font-style: italic; font-size: 13px; }
 
     /* Welcome */
     .welcome { background: white; border-radius: 12px; padding: 18px;
@@ -108,7 +104,7 @@
                    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
                    display: flex; align-items: center; gap: 12px;
                    font-size: 13px; color: #757575; }
-    .spin { width: 18px; height: 18px; border: 2px solid #e0e0e0;
+    .spin { width: 18px; height: 18px; border: 2.5px solid #e0e0e0;
             border-top-color: #d50000; border-radius: 50%;
             animation: spin 0.7s linear infinite; flex-shrink: 0; }
     @keyframes spin { to { transform: rotate(360deg); } }
@@ -145,7 +141,7 @@
     <p class="welcome-text">👋 Hello! Ask me anything about Jio antenna inventory.<br>
     Type a <strong>SAP ID</strong> for instant full record lookup, or ask a general question.</p>
     <div class="chips">
-      <span class="chip" onclick="qa(this)">Show I-JK-SGAR-ENB-0336</span>
+      <span class="chip" onclick="qa(this)">Show I-UW-JSWT-ENB-9004</span>
       <span class="chip" onclick="qa(this)">Sites with alarms in Maharashtra</span>
       <span class="chip" onclick="qa(this)">Show VSWR alarm sites</span>
       <span class="chip" onclick="qa(this)">Unidentified antennas band 2100</span>
@@ -175,68 +171,66 @@
   function qa(el){ document.getElementById('inp').value = el.textContent.trim(); send(); }
 
   function esc(s){
-    return String(s||'')
+    return String(s == null ? '' : s)
       .replace(/&/g,'&amp;').replace(/</g,'&lt;')
       .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  function cellClass(col, val){
-    if (!val || val.trim() === '') return 'na';
+  function getCellClass(col, val){
+    const v = (val||'').trim();
+    if (!v || v === '-') return 'na';
     if (col === 'State')  return 'state';
     if (col === 'SAP ID') return 'sapid';
     if (col === 'Alarm details'){
-      const v = val.toLowerCase().trim();
-      return (v === 'none' || v === '-' || v === 'n/a') ? 'ok' : 'alarm';
+      const lv = v.toLowerCase();
+      return (lv==='none'||lv==='-'||lv==='n/a'||lv==='null') ? 'ok' : 'alarm';
     }
     return '';
   }
 
   function buildTable(records){
     if (!records || records.length === 0)
-      return '<div class="no-data">No records found.</div>';
+      return '<div class="no-data">No records returned from database.</div>';
 
-    const ths = COLS.map(c =>
-      `<th title="${esc(c)}">${esc(c)}</th>`
-    ).join('');
+    const heads = COLS.map(c => `<th title="${esc(c)}">${esc(c)}</th>`).join('');
 
-    const trs = records.map(r => {
-      const tds = COLS.map(col => {
-        const raw = (r[col] || '').trim();
-        const cls = cellClass(col, raw);
+    const rows = records.map(r => {
+      const cells = COLS.map(col => {
+        const raw  = (r[col] == null ? '' : String(r[col])).trim();
+        const cls  = getCellClass(col, raw);
         const disp = raw || 'N/A';
         return `<td class="${cls}" title="${esc(raw)}">${esc(disp)}</td>`;
       }).join('');
-      return `<tr>${tds}</tr>`;
+      return `<tr>${cells}</tr>`;
     }).join('');
 
-    return `
-      <table>
-        <thead><tr>${ths}</tr></thead>
-        <tbody>${trs}</tbody>
-      </table>`;
+    return `<table><thead><tr>${heads}</tr></thead><tbody>${rows}</tbody></table>`;
   }
 
   function addUser(msg){
     const c = document.getElementById('chat');
-    c.innerHTML += `<div class="user-wrap">
-      <div class="user-bubble">${esc(msg)}</div></div>`;
+    c.innerHTML += `<div class="user-wrap"><div class="user-bubble">${esc(msg)}</div></div>`;
     c.scrollTop = c.scrollHeight;
   }
 
   function addTyping(){
-    const c = document.getElementById('chat');
-    const id = 'tp'+Date.now();
+    const c  = document.getElementById('chat');
+    const id = 'tp' + Date.now();
     c.innerHTML += `<div class="typing-card" id="${id}">
       <div class="spin"></div>Searching antenna records...</div>`;
     c.scrollTop = c.scrollHeight;
     return id;
   }
 
-  function rm(id){ const e=document.getElementById(id); if(e) e.remove(); }
+  function rm(id){ const e = document.getElementById(id); if(e) e.remove(); }
 
   function addCard(summary, records, count){
     const c   = document.getElementById('chat');
     const tbl = buildTable(records);
+
+    // Debug: log to console what we received
+    console.log('Records received:', count, records ? records.length : 'null', records);
+
     c.innerHTML += `
       <div class="bot-card">
         <div class="summary-box">
@@ -282,12 +276,26 @@
         body:    JSON.stringify({message: msg, history: hist})
       });
       rm(tid);
+
+      const raw = await res.text();
+      console.log('Raw Lambda response:', raw);
+
       if (!res.ok){
-        addError('Server error ' + res.status + ': ' + await res.text());
+        addError('Server error ' + res.status + ': ' + raw);
       } else {
-        const d = await res.json();
-        if (d.error) addError(d.error);
-        else { addCard(d.summary, d.records, d.retrieved); hist = d.history||[]; }
+        let d;
+        try { d = JSON.parse(raw); } catch(e) { addError('Bad JSON: ' + raw); return; }
+
+        if (d.error) {
+          addError(d.error);
+        } else {
+          // Handle both response formats
+          const summary   = d.summary || d.reply || '(no summary)';
+          const records   = d.records || [];
+          const retrieved = d.retrieved != null ? d.retrieved : records.length;
+          addCard(summary, records, retrieved);
+          hist = d.history || [];
+        }
       }
     } catch(e){
       rm(tid);
@@ -305,7 +313,7 @@
       <div class="welcome">
         <p class="welcome-text">Chat cleared. Ask a new question!</p>
         <div class="chips">
-          <span class="chip" onclick="qa(this)">Show I-JK-SGAR-ENB-0336</span>
+          <span class="chip" onclick="qa(this)">Show I-UW-JSWT-ENB-9004</span>
           <span class="chip" onclick="qa(this)">Sites with alarms in Maharashtra</span>
           <span class="chip" onclick="qa(this)">Show VSWR alarm sites</span>
           <span class="chip" onclick="qa(this)">Unidentified antennas band 2100</span>
