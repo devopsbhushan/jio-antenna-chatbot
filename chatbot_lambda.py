@@ -151,24 +151,35 @@ def is_blank(val):
 
 def get_blank_ret_records(state_name):
     """
-    Load all records for a state and filter:
-    RRH Connect Board ID = blank/'-'
-    AND RRH Connect Port ID = blank/'-'
-    AND Antenna Classification = 'RET'
-    Returns list of dicts with State column included.
+    Filter:
+    Antenna Classification = 'RET'  (case-insensitive)
+    AND RRH Connect Board ID = blank/'-'
+    AND RRH Connect Port ID  = blank/'-'
+    Returns ALL columns + State column.
     """
     sap_map = _load_state_sap(state_name)
     results = []
+    total   = 0
+    sample_classes = set()
+
     for sap_id, records in sap_map.items():
         for r in records:
+            total += 1
             board_id  = r.get("RRH Connect Board ID", "").strip()
-            port_id   = r.get("RRH Connect Port ID", "").strip()
-            ant_class = r.get("Antenna Classification", "").strip().upper()
-            if is_blank(board_id) and is_blank(port_id) and ant_class == "RET":
-                row = {col: r.get(col, "") for col in COLUMNS}
-                row["State"] = state_name   # ensure state is filled
+            port_id   = r.get("RRH Connect Port ID",  "").strip()
+            ant_class = r.get("Antenna Classification","").strip()
+
+            # Collect sample values for CloudWatch debug
+            if len(sample_classes) < 30:
+                sample_classes.add(repr(ant_class))
+
+            if is_blank(board_id) and is_blank(port_id) and ant_class.upper() == "RET":
+                row = dict(r)               # ALL original columns
+                row["State"] = state_name   # ensure State is set
                 results.append(row)
-    print(f"Blank RET (RET class) in {state_name}: {len(results)} records")
+
+    print(f"{state_name}: {total} records checked, {len(results)} matched")
+    print(f"Sample Antenna Classification values seen: {sample_classes}")
     return results
 
 
