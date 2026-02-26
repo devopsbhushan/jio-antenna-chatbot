@@ -1,184 +1,188 @@
-name: Deploy Lambda Functions
+import boto3, json, faiss, numpy as np, pickle
+import gc, re, math, hashlib, io, random
+from collections import Counter, defaultdict
 
-on:
-  workflow_dispatch:
+BUCKET      = "chatbot-input-database"
+BASE_PREFIX = "processed/"
+INDEX_KEY   = "rag-index/faiss.index"
+IDF_KEY     = "rag-model/idf.pkl"
+META_KEY    = "rag-index/metadata.pkl"
+SAP_MAP_KEY = "rag-index/sap_map.pkl"
 
-jobs:
-  deploy:
-    runs-on: ubuntu-latest
-    timeout-minutes: 45
+MAX_ROWS = 200000
+DIM      = 384
+IDF_TOP  = 30000
+CAP_A    = 150000
+CAP_B    =  50000
 
-    steps:
+COLUMNS = [
+    "State","SAP ID","Sector Id","Bands",
+    "RRH Connect Board ID","RRH Connect Port ID",
+    "SF Antenna Model","LSMR Antenna Type",
+    "Antenna Classification","RRH Last Updated Time",
+    "Alarm details"
+]
 
-      - name: Checkout repository
-        uses: actions/checkout@v4
+s3 = boto3.client("s3")
 
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
+def load_json(key):
+    return json.loads(s3.get_object(Bucket=BUCKET, Key=key)["Body"].read())
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
-          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region:            ${{ secrets.AWS_REGION }}
+def row_to_text(row):
+    return (
+        f"SAP ID {row.get('SAP ID','')} in {row.get('State','')}. "
+        f"Sector {row.get('Sector Id','')} band {row.get('Bands','')}. "
+        f"Antenna: {row.get('LSMR Antenna Type','')}. "
+        f"Alarm: {row.get('Alarm details','None')}."
+    )
 
-      # ── Clear all existing layers first ───────────────────────────────────
-      - name: Clear existing layers
-        run: |
-          aws lambda update-function-configuration \
-            --function-name Build_FAISS_Index \
-            --layers --no-cli-pager
-          aws lambda wait function-updated --function-name Build_FAISS_Index
+def has_alarm(row):
+    v = str(row.get("Alarm details","")).strip().lower()
+    return v not in ("","none","null","nan","-")
 
-          aws lambda update-function-configuration \
-            --function-name antenna-chatbot_Lambda \
-            --layers --no-cli-pager
-          aws lambda wait function-updated --function-name antenna-chatbot_Lambda
-          echo "Layers cleared"
+def tokenize(text):
+    return [w for w in re.sub(r"[^a-z0-9\s]"," ",text.lower()).split() if len(w)>1]
 
-      # ── Download wheels — only faiss + numpy needed now ───────────────────
-      # TF-IDF embedder needs NO onnxruntime, NO tokenizers, NO model files
-      - name: Download wheels
-        run: |
-          mkdir -p /tmp/wheels
+def hash_tok(t):
+    return int(hashlib.md5(t.encode()).hexdigest(),16) % DIM
 
-          pip download "numpy==1.24.4" \
-            --dest /tmp/wheels \
-            --only-binary=:all: \
-            --python-version 3.11 \
-            --platform manylinux2014_x86_64 \
-            --no-deps
+def text_to_vec(text, idf):
+    vec = np.zeros(DIM, dtype=np.float32)
+    for t in tokenize(text):
+        vec[hash_tok(t)] += idf.get(t, 1.0)
+    n = np.linalg.norm(vec)
+    if n > 1e-9: vec /= n
+    return vec
 
-          pip download "faiss-cpu==1.7.4" \
-            --dest /tmp/wheels \
-            --only-binary=:all: \
-            --python-version 3.11 \
-            --platform manylinux2014_x86_64 \
-            --no-deps
+def iter_all_rows(idx_meta):
+    for state, meta in idx_meta["states"].items():
+        for i in range(1, meta["chunks"]+1):
+            rows = load_json(f"{BASE_PREFIX}{state}/chunk_{i:04d}.json")
+            for row in rows:
+                row["State"] = state
+                yield row
 
-          echo "Wheels:"
-          ls -lh /tmp/wheels/
+def lambda_handler(event, context):
+    # Check remaining time helper
+    def mins_left():
+        return context.get_remaining_time_in_millis() / 60000
 
-      # ── Single layer: numpy + faiss (~150MB) ──────────────────────────────
-      - name: Build layer
-        run: |
-          mkdir -p layer/python
+    idx_meta  = load_json(f"{BASE_PREFIX}index.json")
+    bucket_a  = []
+    bucket_b  = []
+    count_a   = count_b = 0
+    doc_freq  = Counter()
+    sap_map   = defaultdict(list)
+    total     = 0
 
-          pip install /tmp/wheels/numpy*.whl \
-            --target layer/python --no-deps --quiet
+    print("Pass 1: reservoir sampling + IDF + SAP map (single pass)...")
 
-          FAISS=$(ls /tmp/wheels/ | grep -i faiss | head -1)
-          pip install /tmp/wheels/$FAISS \
-            --target layer/python --no-deps --quiet
+    for row in iter_all_rows(idx_meta):
+        total += 1
+        text   = row_to_text(row)
+        doc_freq.update(set(tokenize(text)))
 
-          cd layer/python
-          find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-          find . -type d -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || true
-          find . -name "*.pyc" -delete 2>/dev/null || true
-          cd ../..
+        # SAP map — store only essential columns to save RAM
+        sap_id = row.get("SAP ID","").strip()
+        if sap_id:
+            sap_map[sap_id].append({c: row.get(c,"") for c in COLUMNS})
 
-          SIZE=$(du -sm layer/ | cut -f1)
-          echo "Layer size: ${SIZE}MB"
-          du -sh layer/python/*/ 2>/dev/null | sort -rh
+        # FAISS reservoir sample
+        entry = {c: row.get(c,"") for c in COLUMNS}
+        entry["_text"] = text
+        if has_alarm(row):
+            count_a += 1
+            if len(bucket_a) < CAP_A:
+                bucket_a.append(entry)
+            else:
+                r = random.randint(0, count_a-1)
+                if r < CAP_A: bucket_a[r] = entry
+        else:
+            count_b += 1
+            if len(bucket_b) < CAP_B:
+                bucket_b.append(entry)
+            else:
+                r = random.randint(0, count_b-1)
+                if r < CAP_B: bucket_b[r] = entry
 
-          cd layer && zip -r ../layer.zip python/ -q && cd ..
-          ls -lh layer.zip
+        if total % 300000 == 0:
+            print(f"  {total:,} rows | SAP IDs: {len(sap_map):,} | "
+                  f"time left: {mins_left():.1f} min")
+            gc.collect()
 
-      - name: Check layer size
-        run: |
-          SIZE=$(du -sm layer/ | cut -f1)
-          [ "$SIZE" -le 250 ] && echo "Size OK: ${SIZE}MB" || exit 1
+    print(f"Pass 1 done: {total:,} rows | {len(sap_map):,} unique SAP IDs | "
+          f"time left: {mins_left():.1f} min")
 
-      # ── Build handler zips ────────────────────────────────────────────────
-      - name: Build handler zips
-        run: |
-          mkdir -p handler_index handler_chatbot
+    # Save SAP map FIRST (largest, save while we still have memory)
+    print("Saving SAP map to S3...")
+    buf = io.BytesIO()
+    pickle.dump(dict(sap_map), buf)
+    sap_size = len(buf.getvalue()) / 1024 / 1024
+    s3.put_object(Bucket=BUCKET, Key=SAP_MAP_KEY, Body=buf.getvalue())
+    print(f"SAP map saved: {len(sap_map):,} SAP IDs, {sap_size:.1f} MB")
+    del sap_map, buf
+    gc.collect()
 
-          cp embedder.py           handler_index/
-          cp build_index_lambda.py handler_index/lambda_function.py
-          cd handler_index && zip -r ../build_index_lambda.zip . -q && cd ..
+    # Build IDF
+    N   = total
+    idf = {w: math.log((N+1)/(c+1))+1.0 for w,c in doc_freq.most_common(IDF_TOP)}
+    del doc_freq
+    gc.collect()
+    buf = io.BytesIO()
+    pickle.dump(idf, buf)
+    s3.put_object(Bucket=BUCKET, Key=IDF_KEY, Body=buf.getvalue())
+    print(f"IDF saved: {len(idf):,} terms | time left: {mins_left():.1f} min")
 
-          cp embedder.py       handler_chatbot/
-          cp chatbot_lambda.py handler_chatbot/lambda_function.py
-          cd handler_chatbot && zip -r ../chatbot_lambda.zip . -q && cd ..
+    # FAISS index
+    selected = (bucket_a + bucket_b)[:MAX_ROWS]
+    del bucket_a, bucket_b
+    gc.collect()
+    print(f"Building FAISS on {len(selected):,} rows...")
 
-          echo "Handler sizes (should be tiny):"
-          ls -lh build_index_lambda.zip chatbot_lambda.zip
+    nlist     = 200
+    quantizer = faiss.IndexFlatL2(DIM)
+    faiss_idx = faiss.IndexIVFFlat(quantizer, DIM, nlist)
+    BATCH     = 1000
+    metadata  = []
 
-      # ── Upload to S3 ──────────────────────────────────────────────────────
-      - name: Upload to S3
-        run: |
-          aws s3 cp layer.zip              s3://${{ secrets.S3_BUCKET }}/deployments/layer.zip
-          aws s3 cp build_index_lambda.zip s3://${{ secrets.S3_BUCKET }}/deployments/build_index_lambda.zip
-          aws s3 cp chatbot_lambda.zip     s3://${{ secrets.S3_BUCKET }}/deployments/chatbot_lambda.zip
-          echo "Uploaded to S3"
+    train_vecs = np.array(
+        [text_to_vec(r["_text"],idf) for r in selected[:10000]],
+        dtype=np.float32
+    )
+    faiss_idx.train(train_vecs)
+    del train_vecs
+    gc.collect()
 
-      # ── Publish single layer ──────────────────────────────────────────────
-      - name: Publish layer
-        id: layer
-        run: |
-          ARN=$(aws lambda publish-layer-version \
-            --layer-name rag-numpy-faiss \
-            --description 'numpy 1.24.4 + faiss-cpu 1.7.4' \
-            --content S3Bucket=${{ secrets.S3_BUCKET }},S3Key=deployments/layer.zip \
-            --compatible-runtimes python3.11 \
-            --query 'LayerVersionArn' --output text)
-          echo "arn=$ARN" >> $GITHUB_OUTPUT
-          echo "Layer ARN: $ARN"
+    for start in range(0, len(selected), BATCH):
+        batch = selected[start:start+BATCH]
+        vecs  = np.array([text_to_vec(r["_text"],idf) for r in batch], dtype=np.float32)
+        faiss_idx.add(vecs)
+        for r in batch:
+            metadata.append({c: r.get(c,"") for c in COLUMNS})
+        del vecs, batch
+        gc.collect()
+        if (start//BATCH) % 50 == 0:
+            print(f"  FAISS: {min(start+BATCH,len(selected)):,}/{len(selected):,} | "
+                  f"time left: {mins_left():.1f} min")
 
-      # ── Deploy Build_FAISS_Index ──────────────────────────────────────────
-      - name: Deploy Build_FAISS_Index
-        run: |
-          aws lambda update-function-code \
-            --function-name Build_FAISS_Index \
-            --s3-bucket ${{ secrets.S3_BUCKET }} \
-            --s3-key deployments/build_index_lambda.zip \
-            --no-cli-pager
-          aws lambda wait function-updated --function-name Build_FAISS_Index
+    faiss_idx.nprobe = 20
+    faiss.write_index(faiss_idx, "/tmp/faiss.index")
+    s3.upload_file("/tmp/faiss.index", BUCKET, INDEX_KEY)
+    del faiss_idx
+    gc.collect()
 
-          # Set layers AND environment variables in one call
-          aws lambda update-function-configuration \
-            --function-name Build_FAISS_Index \
-            --layers ${{ steps.layer.outputs.arn }} \
-            --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }}}" \
-            --no-cli-pager
-          aws lambda wait function-updated --function-name Build_FAISS_Index
-          echo "Build_FAISS_Index deployed"
+    buf = io.BytesIO()
+    pickle.dump(metadata, buf)
+    s3.put_object(Bucket=BUCKET, Key=META_KEY, Body=buf.getvalue())
+    del metadata
+    gc.collect()
 
-      # ── Deploy antenna-chatbot_Lambda ─────────────────────────────────────
-      - name: Deploy antenna-chatbot_Lambda
-        run: |
-          aws lambda update-function-code \
-            --function-name antenna-chatbot_Lambda \
-            --s3-bucket ${{ secrets.S3_BUCKET }} \
-            --s3-key deployments/chatbot_lambda.zip \
-            --no-cli-pager
-          aws lambda wait function-updated --function-name antenna-chatbot_Lambda
-
-          # Set layers AND environment variables in one call
-          aws lambda update-function-configuration \
-            --function-name antenna-chatbot_Lambda \
-            --layers ${{ steps.layer.outputs.arn }} \
-            --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }},GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}}" \
-            --no-cli-pager
-          aws lambda wait function-updated --function-name antenna-chatbot_Lambda
-          echo "antenna-chatbot_Lambda deployed"
-
-      # ── Summary ───────────────────────────────────────────────────────────
-      - name: Print summary
-        run: |
-          echo "================================================"
-          echo "DEPLOYMENT COMPLETE"
-          echo "================================================"
-          echo "Layer ARN: ${{ steps.layer.outputs.arn }}"
-          echo ""
-          echo "No ONNX model needed — TF-IDF embedder uses"
-          echo "zero RAM for model loading. Peak RAM ~200MB."
-          echo ""
-          echo "Test order:"
-          echo "  1. Build_FAISS_Index      → Test → {}"
-          echo "  2. antenna-chatbot_Lambda → Test → ping"
-          echo "================================================"
+    print(f"All done! Time left: {mins_left():.1f} min")
+    return {
+        "statusCode": 200,
+        "body": (
+            f"Indexed {len(selected):,} rows for FAISS. "
+            f"SAP map: {total:,} rows, {sap_size:.0f}MB. "
+            f"Total scanned: {total:,}."
+        )
+    }
