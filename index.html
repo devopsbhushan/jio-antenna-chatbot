@@ -181,28 +181,30 @@
   function buildSectorSummary(sapId, records){
     if (!records || records.length === 0) return '';
 
-    // Group by sector
+    // Sector mapping: 3→0, 4→1, 5→2
+    const SECTOR_MAP = {'3':'0', '4':'1', '5':'2'};
+
+    // Group by mapped sector
     const sectors = {};
     const alarms  = [];
 
     records.forEach(r => {
-      const sec     = (r['Sector Id'] || '?').trim();
+      const rawSec  = (r['Sector Id'] || '?').trim();
+      const sec     = SECTOR_MAP[rawSec] || rawSec;   // apply mapping
       const antenna = (r['LSMR Antenna Type'] || r['SF Antenna Model'] || '').trim();
       const alarm   = (r['Alarm details'] || '').trim();
       const band    = (r['Bands'] || '').trim();
 
       if (!sectors[sec]) sectors[sec] = new Set();
-      if (antenna) sectors[sec].add(antenna);
+      if (antenna) sectors[sec].add(antenna);   // Set auto-deduplicates
 
       if (!isNoAlarm(alarm)){
         alarms.push({ sec, band, alarm });
       }
     });
 
-    const secKeys = Object.keys(sectors).sort((a,b) => {
-      const na = parseInt(a), nb = parseInt(b);
-      return isNaN(na) || isNaN(nb) ? a.localeCompare(b) : na - nb;
-    });
+    // Only show Sector 0, 1, 2 (mapped)
+    const secKeys = ['0','1','2'].filter(s => sectors[s]);
 
     // Build header row: Sector 0 | Sector 1 | ... | Alarms
     const ths = secKeys.map(s => `<th>Sector ${esc(s)}</th>`).join('') + '<th>Alarms</th>';
