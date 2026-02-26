@@ -8,80 +8,121 @@
     * { box-sizing: border-box; margin: 0; padding: 0; }
     body { font-family: 'Segoe UI', Arial, sans-serif; background: #f0f2f5;
            display: flex; flex-direction: column; height: 100vh; overflow: hidden; }
+
+    /* Header */
     .header { background: linear-gradient(135deg, #d50000, #b71c1c); color: white;
               padding: 14px 20px; display: flex; align-items: center; gap: 12px;
-              box-shadow: 0 2px 8px rgba(0,0,0,0.2); flex-shrink: 0; }
-    .hicon { width: 38px; height: 38px; background: rgba(255,255,255,0.2);
-             border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 20px; }
+              box-shadow: 0 2px 8px rgba(0,0,0,0.25); flex-shrink: 0; }
+    .hicon { width: 40px; height: 40px; background: rgba(255,255,255,0.2);
+             border-radius: 50%; display: flex; align-items: center;
+             justify-content: center; font-size: 22px; }
     .header h1 { font-size: 17px; font-weight: 700; }
-    .header p  { font-size: 12px; opacity: 0.85; margin-top: 2px; }
-    .dot { width: 9px; height: 9px; background: #69f0ae; border-radius: 50%;
-           margin-left: auto; box-shadow: 0 0 6px #69f0ae; animation: pulse 2s infinite; }
+    .header p  { font-size: 12px; opacity: 0.8; margin-top: 2px; }
+    .dot { width: 10px; height: 10px; background: #69f0ae; border-radius: 50%;
+           margin-left: auto; box-shadow: 0 0 8px #69f0ae; animation: pulse 2s infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:0.3} }
 
-    #chat { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 14px; }
+    /* Chat area */
+    #chat { flex: 1; overflow-y: auto; padding: 16px;
+            display: flex; flex-direction: column; gap: 14px; }
 
+    /* User bubble */
     .user-wrap { display: flex; justify-content: flex-end; }
     .user-bubble { background: #1565c0; color: white; padding: 10px 16px;
-                   border-radius: 16px 16px 4px 16px; font-size: 14px; max-width: 70%; line-height: 1.5; }
+                   border-radius: 16px 16px 4px 16px; font-size: 14px;
+                   max-width: 70%; line-height: 1.5; }
 
-    .bot-card { background: white; border-radius: 12px; box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+    /* Bot card */
+    .bot-card { background: white; border-radius: 12px;
+                box-shadow: 0 2px 12px rgba(0,0,0,0.1);
                 overflow: hidden; animation: fi 0.2s ease; }
-    @keyframes fi { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:none} }
+    @keyframes fi { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
 
-    .summary-section { padding: 14px 16px; background: #fff8f8; border-bottom: 2px solid #ffcdd2; }
-    .section-label { font-size: 11px; font-weight: 700; text-transform: uppercase;
-                     letter-spacing: 0.6px; margin-bottom: 6px; }
-    .summary-section .section-label { color: #c62828; }
-    .summary-text { font-size: 14px; color: #1a1a2e; line-height: 1.7; white-space: pre-wrap; }
+    /* AI Summary */
+    .summary-box { padding: 14px 16px; background: #fff8f8;
+                   border-left: 4px solid #d50000; }
+    .box-label { font-size: 11px; font-weight: 700; text-transform: uppercase;
+                 letter-spacing: 0.6px; margin-bottom: 6px; color: #d50000; }
+    .summary-text { font-size: 14px; color: #222; line-height: 1.7; white-space: pre-wrap; }
 
-    .table-section { overflow-x: auto; }
-    .table-header { padding: 8px 16px; display: flex; align-items: center;
-                    justify-content: space-between; background: #e8f0fe; border-bottom: 1px solid #c5d8fb; }
-    .table-header .section-label { color: #1565c0; }
-    .rec-count { font-size: 12px; color: #1565c0; font-weight: 600; }
+    /* Table section */
+    .table-wrap { overflow-x: auto; border-top: 2px solid #e8f0fe; }
+    .table-bar { padding: 8px 14px; background: #e8f0fe;
+                 display: flex; align-items: center; justify-content: space-between; }
+    .table-bar .box-label { color: #1565c0; margin-bottom: 0; }
+    .rec-count { font-size: 12px; font-weight: 600; color: #1565c0; }
 
-    table { width: 100%; border-collapse: collapse; font-size: 12px; min-width: 1000px; }
-    thead th { background: #1565c0; color: white; padding: 9px 12px;
-               text-align: left; font-weight: 600; white-space: nowrap;
-               border-right: 1px solid rgba(255,255,255,0.15); }
+    /* THE TABLE */
+    table { width: 100%; border-collapse: collapse; font-size: 12.5px; min-width: 1100px; }
+
+    thead tr { background: #1a237e; }
+    thead th {
+      color: white;
+      padding: 10px 14px;
+      text-align: left;
+      font-weight: 600;
+      white-space: nowrap;
+      border-right: 1px solid rgba(255,255,255,0.2);
+      letter-spacing: 0.3px;
+    }
     thead th:last-child { border-right: none; }
-    tbody tr:nth-child(even) { background: #f8f9ff; }
-    tbody tr:hover td { background: #e8f0fe !important; }
-    tbody td { padding: 8px 12px; border-bottom: 1px solid #eee;
-               border-right: 1px solid #f0f0f0; color: #333;
-               max-width: 200px; white-space: nowrap;
-               overflow: hidden; text-overflow: ellipsis; }
+
+    tbody tr:nth-child(odd)  { background: #ffffff; }
+    tbody tr:nth-child(even) { background: #f5f7ff; }
+    tbody tr:hover td { background: #dce8ff !important; }
+
+    tbody td {
+      padding: 9px 14px;
+      color: #333;
+      border-right: 1px solid #e8eaf6;
+      border-bottom: 1px solid #eeeeee;
+      max-width: 220px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      vertical-align: middle;
+    }
     tbody td:last-child { border-right: none; }
-    tbody td.na { color: #bbb; font-style: italic; }
-    tbody td.alarm-cell { color: #c62828; font-weight: 700; background: #fff8f8 !important; }
-    tbody td.ok-cell { color: #2e7d32; }
 
-    .no-records { padding: 20px; text-align: center; color: #888; font-style: italic; }
+    /* Cell states */
+    td.na     { color: #bdbdbd; font-style: italic; }
+    td.alarm  { color: #b71c1c; font-weight: 700; background: #ffebee !important; }
+    td.ok     { color: #2e7d32; }
+    td.state  { font-weight: 600; color: #1565c0; }
+    td.sapid  { font-family: monospace; font-size: 11.5px; color: #37474f; }
 
+    .no-data { padding: 24px; text-align: center; color: #9e9e9e; font-style: italic; }
+
+    /* Welcome */
     .welcome { background: white; border-radius: 12px; padding: 18px;
-               box-shadow: 0 2px 10px rgba(0,0,0,0.08); }
-    .welcome p { font-size: 14px; color: #333; line-height: 1.6; }
-    .chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
+               box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
+    .welcome-text { font-size: 14px; color: #444; line-height: 1.6; margin-bottom: 12px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
     .chip { background: #e8f0fe; color: #1565c0; border: 1px solid #c5d8fb;
-            border-radius: 20px; padding: 6px 14px; font-size: 12px; cursor: pointer; transition: all 0.15s; }
+            border-radius: 20px; padding: 6px 14px; font-size: 12px;
+            cursor: pointer; transition: all 0.15s; user-select: none; }
     .chip:hover { background: #1565c0; color: white; }
 
-    .typing-card { background: white; border-radius: 12px; padding: 16px;
-                   box-shadow: 0 2px 10px rgba(0,0,0,0.08); color: #888;
-                   font-size: 13px; font-style: italic; display: flex; align-items: center; gap: 10px; }
-    .spinner { width: 16px; height: 16px; border: 2px solid #e0e0e0;
-               border-top-color: #d50000; border-radius: 50%; animation: spin 0.8s linear infinite; flex-shrink: 0; }
+    /* Typing */
+    .typing-card { background: white; border-radius: 12px; padding: 14px 18px;
+                   box-shadow: 0 2px 12px rgba(0,0,0,0.08);
+                   display: flex; align-items: center; gap: 12px;
+                   font-size: 13px; color: #757575; }
+    .spin { width: 18px; height: 18px; border: 2px solid #e0e0e0;
+            border-top-color: #d50000; border-radius: 50%;
+            animation: spin 0.7s linear infinite; flex-shrink: 0; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
+    /* Input bar */
     .bar { background: white; border-top: 1px solid #e0e0e0; flex-shrink: 0;
            padding: 12px 16px; display: flex; gap: 8px; align-items: center; }
-    #inp { flex: 1; padding: 10px 16px; border: 1.5px solid #e0e0e0;
-           border-radius: 24px; font-size: 14px; outline: none; font-family: inherit; transition: border-color 0.2s; }
+    #inp { flex: 1; padding: 10px 18px; border: 1.5px solid #e0e0e0;
+           border-radius: 24px; font-size: 14px; outline: none;
+           font-family: inherit; transition: border-color 0.2s; }
     #inp:focus { border-color: #1565c0; }
-    #sendBtn { padding: 10px 22px; background: #d50000; color: white; border: none;
-               border-radius: 24px; font-size: 14px; font-weight: 600; cursor: pointer;
-               min-width: 70px; transition: background 0.2s; }
+    #sendBtn { padding: 10px 24px; background: #d50000; color: white; border: none;
+               border-radius: 24px; font-size: 14px; font-weight: 600;
+               cursor: pointer; min-width: 76px; transition: background 0.2s; }
     #sendBtn:hover { background: #b71c1c; }
     #clearBtn { padding: 10px 14px; background: #f5f5f5; color: #666;
                 border: none; border-radius: 24px; font-size: 13px; cursor: pointer; }
@@ -101,7 +142,8 @@
 
 <div id="chat">
   <div class="welcome">
-    <p>👋 Hello! Ask me anything about Jio antenna inventory. Type a SAP ID for instant full record lookup, or ask a general question.</p>
+    <p class="welcome-text">👋 Hello! Ask me anything about Jio antenna inventory.<br>
+    Type a <strong>SAP ID</strong> for instant full record lookup, or ask a general question.</p>
     <div class="chips">
       <span class="chip" onclick="qa(this)">Show I-JK-SGAR-ENB-0336</span>
       <span class="chip" onclick="qa(this)">Sites with alarms in Maharashtra</span>
@@ -120,8 +162,7 @@
 </div>
 
 <script>
-  const API = 'https://xr525wyykz4ksgcddh464p72oq0vawsf.lambda-url.ap-south-1.on.aws/';
-
+  const API  = 'https://xr525wyykz4ksgcddh464p72oq0vawsf.lambda-url.ap-south-1.on.aws/';
   const COLS = [
     "State","SAP ID","Sector Id","Bands",
     "RRH Connect Board ID","RRH Connect Port ID",
@@ -131,61 +172,80 @@
 
   let hist = [], busy = false;
 
-  function qa(el) { document.getElementById('inp').value = el.textContent.trim(); send(); }
+  function qa(el){ document.getElementById('inp').value = el.textContent.trim(); send(); }
 
-  function esc(s) {
-    return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  function esc(s){
+    return String(s||'')
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;')
+      .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  function addUser(msg) {
+  function cellClass(col, val){
+    if (!val || val.trim() === '') return 'na';
+    if (col === 'State')  return 'state';
+    if (col === 'SAP ID') return 'sapid';
+    if (col === 'Alarm details'){
+      const v = val.toLowerCase().trim();
+      return (v === 'none' || v === '-' || v === 'n/a') ? 'ok' : 'alarm';
+    }
+    return '';
+  }
+
+  function buildTable(records){
+    if (!records || records.length === 0)
+      return '<div class="no-data">No records found.</div>';
+
+    const ths = COLS.map(c =>
+      `<th title="${esc(c)}">${esc(c)}</th>`
+    ).join('');
+
+    const trs = records.map(r => {
+      const tds = COLS.map(col => {
+        const raw = (r[col] || '').trim();
+        const cls = cellClass(col, raw);
+        const disp = raw || 'N/A';
+        return `<td class="${cls}" title="${esc(raw)}">${esc(disp)}</td>`;
+      }).join('');
+      return `<tr>${tds}</tr>`;
+    }).join('');
+
+    return `
+      <table>
+        <thead><tr>${ths}</tr></thead>
+        <tbody>${trs}</tbody>
+      </table>`;
+  }
+
+  function addUser(msg){
     const c = document.getElementById('chat');
-    c.innerHTML += `<div class="user-wrap"><div class="user-bubble">${esc(msg)}</div></div>`;
+    c.innerHTML += `<div class="user-wrap">
+      <div class="user-bubble">${esc(msg)}</div></div>`;
     c.scrollTop = c.scrollHeight;
   }
 
-  function addTyping() {
+  function addTyping(){
     const c = document.getElementById('chat');
-    const id = 'tp_' + Date.now();
-    c.innerHTML += `<div class="typing-card" id="${id}"><div class="spinner"></div>Searching antenna records...</div>`;
+    const id = 'tp'+Date.now();
+    c.innerHTML += `<div class="typing-card" id="${id}">
+      <div class="spin"></div>Searching antenna records...</div>`;
     c.scrollTop = c.scrollHeight;
     return id;
   }
 
-  function rm(id) { const e=document.getElementById(id); if(e) e.remove(); }
+  function rm(id){ const e=document.getElementById(id); if(e) e.remove(); }
 
-  function buildTable(records) {
-    if (!records || records.length === 0)
-      return '<div class="no-records">No records found.</div>';
-
-    const heads = COLS.map(c => `<th title="${esc(c)}">${esc(c)}</th>`).join('');
-    const rows  = records.map(r => {
-      const cells = COLS.map(col => {
-        const val     = (r[col] || '').trim();
-        const isEmpty = !val;
-        const isAlarm = col === 'Alarm details' && val && val.toLowerCase() !== 'none' && val !== '-';
-        const isOk    = col === 'Alarm details' && (!val || val.toLowerCase() === 'none' || val === '-');
-        let cls = isEmpty ? 'na' : (isAlarm ? 'alarm-cell' : (isOk ? 'ok-cell' : ''));
-        const display = isEmpty ? 'N/A' : esc(val);
-        return `<td class="${cls}" title="${esc(val)}">${display}</td>`;
-      }).join('');
-      return `<tr>${cells}</tr>`;
-    }).join('');
-
-    return `<table><thead><tr>${heads}</tr></thead><tbody>${rows}</tbody></table>`;
-  }
-
-  function addBotCard(summary, records, count) {
+  function addCard(summary, records, count){
     const c   = document.getElementById('chat');
     const tbl = buildTable(records);
     c.innerHTML += `
       <div class="bot-card">
-        <div class="summary-section">
-          <div class="section-label">🤖 AI Summary</div>
+        <div class="summary-box">
+          <div class="box-label">🤖 AI Summary</div>
           <div class="summary-text">${esc(summary)}</div>
         </div>
-        <div class="table-section">
-          <div class="table-header">
-            <span class="section-label">📊 Raw Data</span>
+        <div class="table-wrap">
+          <div class="table-bar">
+            <span class="box-label">📊 Raw Data</span>
             <span class="rec-count">${count} record${count!==1?'s':''} found</span>
           </div>
           ${tbl}
@@ -194,60 +254,56 @@
     c.scrollTop = c.scrollHeight;
   }
 
-  function addError(msg) {
+  function addError(msg){
     const c = document.getElementById('chat');
-    c.innerHTML += `<div class="bot-card"><div class="summary-section">
-      <div class="summary-text" style="color:#c62828">⚠ ${esc(msg)}</div></div></div>`;
+    c.innerHTML += `<div class="bot-card">
+      <div class="summary-box" style="border-color:#c62828">
+        <div class="summary-text" style="color:#c62828">⚠ ${esc(msg)}</div>
+      </div></div>`;
     c.scrollTop = c.scrollHeight;
   }
 
-  async function send() {
+  async function send(){
     if (busy) return;
     const inp = document.getElementById('inp');
     const msg = inp.value.trim();
     if (!msg) return;
-
     inp.value = '';
     addUser(msg);
     busy = true;
     const btn = document.getElementById('sendBtn');
-    btn.textContent = '...';
-    btn.style.background = '#888';
+    btn.textContent = '...'; btn.style.background = '#888';
     const tid = addTyping();
 
     try {
       const res = await fetch(API, {
         method:  'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body:    JSON.stringify({ message: msg, history: hist })
+        headers: {'Content-Type':'application/json'},
+        body:    JSON.stringify({message: msg, history: hist})
       });
       rm(tid);
-      if (!res.ok) {
-        addError('Server error ' + res.status);
+      if (!res.ok){
+        addError('Server error ' + res.status + ': ' + await res.text());
       } else {
         const d = await res.json();
         if (d.error) addError(d.error);
-        else {
-          addBotCard(d.summary, d.records, d.retrieved);
-          hist = d.history || [];
-        }
+        else { addCard(d.summary, d.records, d.retrieved); hist = d.history||[]; }
       }
-    } catch(e) {
+    } catch(e){
       rm(tid);
       addError('Connection error: ' + e.message);
     }
 
     busy = false;
-    btn.textContent = 'Send';
-    btn.style.background = '#d50000';
+    btn.textContent = 'Send'; btn.style.background = '#d50000';
     inp.focus();
   }
 
-  function clr() {
+  function clr(){
     hist = [];
     document.getElementById('chat').innerHTML = `
       <div class="welcome">
-        <p>Chat cleared. Ask a new question!</p>
+        <p class="welcome-text">Chat cleared. Ask a new question!</p>
         <div class="chips">
           <span class="chip" onclick="qa(this)">Show I-JK-SGAR-ENB-0336</span>
           <span class="chip" onclick="qa(this)">Sites with alarms in Maharashtra</span>
