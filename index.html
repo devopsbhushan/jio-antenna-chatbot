@@ -1,5 +1,4 @@
 <!DOCTYPE html>
-
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -30,65 +29,50 @@
                    border-radius: 16px 16px 4px 16px; font-size: 14px;
                    max-width: 70%; line-height: 1.5; word-break: break-word; }
 
+    /* Bot card — NO overflow:hidden, allow table to show fully */
     .bot-card { background: white; border-radius: 12px;
-                box-shadow: 0 2px 12px rgba(0,0,0,0.1); overflow: hidden;
+                box-shadow: 0 2px 12px rgba(0,0,0,0.1);
                 animation: fi 0.2s ease; }
     @keyframes fi { from{opacity:0;transform:translateY(8px)} to{opacity:1;transform:none} }
 
-    /* Summary box */
-    .summary-box { padding: 14px 16px; background: #fff8f8; border-left: 4px solid #d50000; }
+    .summary-box { padding: 14px 16px; background: #fff8f8;
+                   border-left: 4px solid #d50000;
+                   border-radius: 12px 12px 0 0; }
     .box-label { font-size: 11px; font-weight: 700; text-transform: uppercase;
                  letter-spacing: 0.6px; margin-bottom: 8px; }
     .summary-box .box-label { color: #d50000; }
     .summary-text { font-size: 13.5px; color: #222; line-height: 1.8; white-space: pre-wrap; }
 
-    /* Table section */
-    .table-wrap { overflow-x: auto; border-top: 2px solid #e8f0fe; }
+    /* Table container — this is key: overflow-x scroll here */
+    .table-section { border-top: 2px solid #c5cae9; border-radius: 0 0 12px 12px; }
     .table-bar { padding: 8px 14px; background: #e8f0fe;
                  display: flex; align-items: center; justify-content: space-between; }
     .table-bar .box-label { color: #1565c0; margin-bottom: 0; }
     .rec-count { font-size: 12px; font-weight: 600; color: #1565c0; }
+    .table-scroll { overflow-x: auto; width: 100%; }
 
-    /* TABLE STYLES - explicit borders everywhere */
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-      min-width: 1100px;
-      border: 2px solid #c5cae9;
-    }
+    table { border-collapse: collapse; font-size: 12px; width: 100%; min-width: 1150px; }
     thead tr { background: #1a237e; }
-    thead th {
-      color: white;
-      padding: 10px 12px;
-      text-align: left;
-      font-weight: 600;
-      white-space: nowrap;
-      border: 1px solid rgba(255,255,255,0.25);
-      letter-spacing: 0.2px;
-      font-size: 11.5px;
-    }
+    thead th { color: white; padding: 10px 12px; text-align: left;
+               font-weight: 600; white-space: nowrap; font-size: 11.5px;
+               border-right: 1px solid rgba(255,255,255,0.2); }
+    thead th:last-child { border-right: none; }
     tbody tr:nth-child(odd)  { background: #ffffff; }
     tbody tr:nth-child(even) { background: #f5f7ff; }
-    tbody tr:hover td { background: #dce8ff !important; cursor: default; }
-    tbody td {
-      padding: 8px 12px;
-      color: #333;
-      border: 1px solid #dde2f0;
-      white-space: nowrap;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      max-width: 200px;
-      vertical-align: middle;
-      font-size: 12px;
-    }
-    td.na     { color: #bdbdbd; font-style: italic; font-size: 11px; }
-    td.alarm  { color: #b71c1c; font-weight: 700; background: #ffebee !important; }
-    td.ok     { color: #2e7d32; }
-    td.state  { font-weight: 600; color: #283593; }
-    td.sapid  { font-family: 'Courier New', monospace; font-size: 11px; color: #37474f; font-weight: 600; }
-
-    .no-data { padding: 24px; text-align: center; color: #9e9e9e; font-style: italic; font-size: 13px; }
+    tbody tr:hover td { background: #dce8ff !important; }
+    tbody td { padding: 8px 12px; color: #333; font-size: 12px;
+               border-right: 1px solid #e0e4f0; border-bottom: 1px solid #e8eaf6;
+               white-space: nowrap; overflow: hidden;
+               text-overflow: ellipsis; max-width: 200px; vertical-align: middle; }
+    tbody td:last-child { border-right: none; }
+    td.na    { color: #bdbdbd; font-style: italic; font-size: 11px; }
+    td.alarm { color: #b71c1c; font-weight: 700; background: #ffebee !important; }
+    td.ok    { color: #2e7d32; }
+    td.state { font-weight: 600; color: #283593; }
+    td.sapid { font-family: 'Courier New', monospace; font-size: 11px;
+               color: #37474f; font-weight: 600; }
+    .no-data { padding: 24px; text-align: center; color: #9e9e9e;
+               font-style: italic; font-size: 13px; }
 
     /* Welcome */
     .welcome { background: white; border-radius: 12px; padding: 18px;
@@ -100,7 +84,6 @@
             cursor: pointer; transition: all 0.15s; user-select: none; }
     .chip:hover { background: #1565c0; color: white; }
 
-    /* Typing */
     .typing-card { background: white; border-radius: 12px; padding: 14px 18px;
                    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
                    display: flex; align-items: center; gap: 12px;
@@ -110,7 +93,6 @@
             animation: spin 0.7s linear infinite; flex-shrink: 0; }
     @keyframes spin { to { transform: rotate(360deg); } }
 
-    /* Input bar */
     .bar { background: white; border-top: 1px solid #e0e0e0; flex-shrink: 0;
            padding: 12px 16px; display: flex; gap: 8px; align-items: center; }
     #inp { flex: 1; padding: 10px 18px; border: 1.5px solid #e0e0e0;
@@ -177,35 +159,38 @@
       .replace(/>/g,'&gt;').replace(/"/g,'&quot;');
   }
 
-  function getCellClass(col, val){
-    const v = (val||'').trim();
-    if (!v || v === '-') return 'na';
+  function cellClass(col, val){
+    const v = (val||'').trim().toLowerCase();
+    if (!val || !val.trim() || val.trim()==='-') return 'na';
     if (col === 'State')  return 'state';
     if (col === 'SAP ID') return 'sapid';
-    if (col === 'Alarm details'){
-      const lv = v.toLowerCase();
-      return (lv==='none'||lv==='-'||lv==='n/a'||lv==='null') ? 'ok' : 'alarm';
-    }
+    if (col === 'Alarm details')
+      return (v==='none'||v==='-'||v==='n/a'||v==='null'||v==='') ? 'ok' : 'alarm';
     return '';
   }
 
   function buildTable(records){
     if (!records || records.length === 0)
-      return '<div class="no-data">No records returned from database.</div>';
+      return '<div class="no-data">No records found.</div>';
 
-    const heads = COLS.map(c => `<th title="${esc(c)}">${esc(c)}</th>`).join('');
-
-    const rows = records.map(r => {
-      const cells = COLS.map(col => {
-        const raw  = (r[col] == null ? '' : String(r[col])).trim();
-        const cls  = getCellClass(col, raw);
-        const disp = raw || 'N/A';
+    const ths = COLS.map(c => `<th>${esc(c)}</th>`).join('');
+    const trs = records.map(r => {
+      const tds = COLS.map(col => {
+        const raw  = r[col] == null ? '' : String(r[col]);
+        const disp = raw.trim() || 'N/A';
+        const cls  = cellClass(col, raw);
         return `<td class="${cls}" title="${esc(raw)}">${esc(disp)}</td>`;
       }).join('');
-      return `<tr>${cells}</tr>`;
+      return `<tr>${tds}</tr>`;
     }).join('');
 
-    return `<table><thead><tr>${heads}</tr></thead><tbody>${rows}</tbody></table>`;
+    return `
+      <div class="table-scroll">
+        <table>
+          <thead><tr>${ths}</tr></thead>
+          <tbody>${trs}</tbody>
+        </table>
+      </div>`;
   }
 
   function addUser(msg){
@@ -215,30 +200,26 @@
   }
 
   function addTyping(){
-    const c  = document.getElementById('chat');
-    const id = 'tp' + Date.now();
+    const c = document.getElementById('chat');
+    const id = 'tp'+Date.now();
     c.innerHTML += `<div class="typing-card" id="${id}">
       <div class="spin"></div>Searching antenna records...</div>`;
     c.scrollTop = c.scrollHeight;
     return id;
   }
 
-  function rm(id){ const e = document.getElementById(id); if(e) e.remove(); }
+  function rm(id){ const e=document.getElementById(id); if(e) e.remove(); }
 
   function addCard(summary, records, count){
     const c   = document.getElementById('chat');
     const tbl = buildTable(records);
-
-    // Debug: log to console what we received
-    console.log('Records received:', count, records ? records.length : 'null', records);
-
     c.innerHTML += `
       <div class="bot-card">
         <div class="summary-box">
           <div class="box-label">🤖 AI Summary</div>
           <div class="summary-text">${esc(summary)}</div>
         </div>
-        <div class="table-wrap">
+        <div class="table-section">
           <div class="table-bar">
             <span class="box-label">📊 Raw Data</span>
             <span class="rec-count">${count} record${count!==1?'s':''} found</span>
@@ -252,7 +233,7 @@
   function addError(msg){
     const c = document.getElementById('chat');
     c.innerHTML += `<div class="bot-card">
-      <div class="summary-box" style="border-color:#c62828">
+      <div class="summary-box" style="border-color:#c62828;border-radius:12px">
         <div class="summary-text" style="color:#c62828">⚠ ${esc(msg)}</div>
       </div></div>`;
     c.scrollTop = c.scrollHeight;
@@ -277,30 +258,22 @@
         body:    JSON.stringify({message: msg, history: hist})
       });
       rm(tid);
-
       const raw = await res.text();
-      console.log('Raw Lambda response:', raw);
-
-      if (!res.ok){
-        addError('Server error ' + res.status + ': ' + raw);
-      } else {
+      if (!res.ok){ addError('Server error ' + res.status + ': ' + raw); }
+      else {
         let d;
-        try { d = JSON.parse(raw); } catch(e) { addError('Bad JSON: ' + raw); return; }
-
-        if (d.error) {
-          addError(d.error);
-        } else {
-          // Handle both response formats
-          const summary   = d.summary || d.reply || '(no summary)';
-          const records   = d.records || [];
-          const retrieved = d.retrieved != null ? d.retrieved : records.length;
+        try { d = JSON.parse(raw); } catch(e){ addError('Parse error: '+raw); return; }
+        if (d.error){ addError(d.error); }
+        else {
+          const summary   = d.summary || d.reply || '';
+          const records   = Array.isArray(d.records) ? d.records : [];
+          const retrieved = typeof d.retrieved === 'number' ? d.retrieved : records.length;
           addCard(summary, records, retrieved);
-          hist = d.history || [];
+          hist = Array.isArray(d.history) ? d.history : [];
         }
       }
     } catch(e){
-      rm(tid);
-      addError('Connection error: ' + e.message);
+      rm(tid); addError('Connection error: ' + e.message);
     }
 
     busy = false;
