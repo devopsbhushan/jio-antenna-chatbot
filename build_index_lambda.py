@@ -15,12 +15,24 @@ IDF_TOP  = 30000
 CAP_A    = 150000
 CAP_B    =  50000
 
+# All 30 columns stored in SAP map for full Excel export
 COLUMNS = [
+    "State","JioCenter","Cluster ID","SAP ID","ENB ID","Sector Id","Cell ID","Bands",
+    "RRH Connect Board ID","RRH Connect Port ID",
+    "SF Antenna Model","SF Antenna Type",
+    "RET Connect Board ID","RET Connect Port ID","RET ANT ID",
+    "Vendor Code","Serial Number","Ant Model Number","Ant Operating Band",
+    "LSMR Tilt Value","LSMR Tilt Date","LSMR Antenna Type","LSMR Antenna Category",
+    "Antenna Classification","Additional Remarks","5G Exclusive Antenna",
+    "Alarm Status","Alarm details","RRH Last Updated Time","RET Source"
+]
+
+# Short columns for FAISS metadata only (saves RAM)
+FAISS_COLUMNS = [
     "State","SAP ID","Sector Id","Bands",
     "RRH Connect Board ID","RRH Connect Port ID",
     "SF Antenna Model","LSMR Antenna Type",
-    "Antenna Classification","RRH Last Updated Time",
-    "Alarm details"
+    "Antenna Classification","RRH Last Updated Time","Alarm details"
 ]
 
 s3 = boto3.client("s3")
@@ -88,7 +100,7 @@ def lambda_handler(event, context):
                     state_sap[sap_id].append({c: row.get(c,"") for c in COLUMNS})
 
                 # FAISS reservoir sample
-                entry = {c: row.get(c,"") for c in COLUMNS}
+                entry = {c: row.get(c,"") for c in FAISS_COLUMNS}
                 entry["_text"] = text
                 if has_alarm(row):
                     count_a += 1
@@ -157,7 +169,7 @@ def lambda_handler(event, context):
         vecs  = np.array([text_to_vec(r["_text"],idf) for r in batch], dtype=np.float32)
         faiss_idx.add(vecs)
         for r in batch:
-            metadata.append({c: r.get(c,"") for c in COLUMNS})
+            metadata.append({c: r.get(c,"") for c in FAISS_COLUMNS})
         del vecs, batch
         gc.collect()
         if (start//BATCH) % 50 == 0:
