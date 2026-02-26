@@ -323,22 +323,21 @@
       <div class="bot-card">
         ${sumHtml}
         ${dlBtn}
+        ${doDownload ? '' : `
         <div class="table-section">
           <div class="table-bar">
             <span class="box-label">📊 Raw Data</span>
             <span class="rec-count">${count} record${count!==1?'s':''} found</span>
           </div>
           ${rawTbl}
-        </div>
+        </div>`}
       </div>`;
     c.scrollTop = c.scrollHeight;
 
-    // Bind download button
+    // Bind download button — no auto-download, manual only
     if (doDownload && records.length > 0){
       const btn = document.getElementById(dlId);
       if (btn) btn.onclick = () => downloadExcel(records, filename || 'Blank_RET.xlsx');
-      // Auto-download immediately
-      downloadExcel(records, filename || 'Blank_RET.xlsx');
     }
   }
 
@@ -355,18 +354,24 @@
 
   function downloadExcel(records, filename){
     if (!records || records.length === 0) return;
-    const COLS = [
-      "State","SAP ID","Sector Id","Bands",
-      "RRH Connect Board ID","RRH Connect Port ID",
-      "SF Antenna Model","LSMR Antenna Type",
-      "Antenna Classification","RRH Last Updated Time","Alarm details"
-    ];
-    const wsData = [COLS];
-    records.forEach(r => wsData.push(COLS.map(c => r[c] || '')));
+
+    // Use ALL columns from the data — State first, then rest in original order
+    const allKeys = ["State"];
+    records.forEach(r => {
+      Object.keys(r).forEach(k => {
+        if (k !== "State" && !allKeys.includes(k)) allKeys.push(k);
+      });
+    });
+
+    const wsData = [allKeys];
+    records.forEach(r => wsData.push(allKeys.map(c => r[c] != null ? String(r[c]) : '')));
+
     const wb = XLSX.utils.book_new();
     const ws = XLSX.utils.aoa_to_sheet(wsData);
-    // Column widths
-    ws['!cols'] = COLS.map(c => ({ wch: Math.max(c.length, 15) }));
+
+    // Style header row bold + auto column widths
+    ws['!cols'] = allKeys.map(k => ({ wch: Math.max(k.length + 2, 15) }));
+
     XLSX.utils.book_append_sheet(wb, ws, 'Blank RET Data');
     XLSX.writeFile(wb, filename || 'export.xlsx');
   }
