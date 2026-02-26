@@ -15,11 +15,22 @@ _meta      = None
 _sap_cache = {}
 
 COLUMNS = [
+    "State","JioCenter","Cluster ID","SAP ID","ENB ID","Sector Id","Cell ID","Bands",
+    "RRH Connect Board ID","RRH Connect Port ID",
+    "SF Antenna Model","SF Antenna Type",
+    "RET Connect Board ID","RET Connect Port ID","RET ANT ID",
+    "Vendor Code","Serial Number","Ant Model Number","Ant Operating Band",
+    "LSMR Tilt Value","LSMR Tilt Date","LSMR Antenna Type","LSMR Antenna Category",
+    "Antenna Classification","Additional Remarks","5G Exclusive Antenna",
+    "Alarm Status","Alarm details","RRH Last Updated Time","RET Source"
+]
+
+# Short columns for normal display
+DISPLAY_COLUMNS = [
     "State","SAP ID","Sector Id","Bands",
     "RRH Connect Board ID","RRH Connect Port ID",
     "SF Antenna Model","LSMR Antenna Type",
-    "Antenna Classification","RRH Last Updated Time",
-    "Alarm details"
+    "Antenna Classification","RRH Last Updated Time","Alarm details"
 ]
 
 STATE_CODE_MAP = {
@@ -146,15 +157,21 @@ def is_blank_ret_query(msg):
 
 
 def is_blank(val):
-    return not val or val.strip() in ("", "-", "N/A", "null", "None", "nan","0")
+    return not val or val.strip() in ("", "-", "N/A", "null", "None", "nan", "0")
 
 
 def get_blank_ret_records(state_name):
+    """
+    Filter:
+    Antenna Classification = 'RET'  (case-insensitive)
+    AND RRH Connect Board ID = blank/'-'
+    AND RRH Connect Port ID  = blank/'-'
+    Returns ALL columns + State column.
+    """
     sap_map = _load_state_sap(state_name)
     results = []
     total   = 0
-    all_classes = set()
-    all_boards  = set()
+    sample_classes = set()
 
     for sap_id, records in sap_map.items():
         for r in records:
@@ -162,19 +179,26 @@ def get_blank_ret_records(state_name):
             board_id  = r.get("RRH Connect Board ID", "").strip()
             port_id   = r.get("RRH Connect Port ID",  "").strip()
             ant_class = r.get("Antenna Classification","").strip()
-            all_classes.add(repr(ant_class))
-            all_boards.add(repr(board_id))
+
+            # Always collect sample values for CloudWatch debug
+            sample_classes.add(repr(ant_class))
 
             if is_blank(board_id) and is_blank(port_id) and ant_class.upper() == "RET":
-                row = dict(r)
-                row["State"] = state_name
+                row = dict(r)               # ALL original columns
+                row["State"] = state_name   # ensure State is set
                 results.append(row)
 
-    print(f"TOTAL RECORDS IN {state_name}: {total}")
-    print(f"MATCHED: {len(results)}")
-    print(f"ALL ANTENNA CLASSIFICATION VALUES: {sorted(all_classes)}")
-    print(f"SAMPLE BOARD ID VALUES: {sorted(all_boards)[:20]}")
+    print(f"{state_name}: {total} records checked, {len(results)} matched")
+    # Print ALL unique Antenna Classification values seen
+    print(f"ALL Antenna Classification values in {state_name}: {sorted(sample_classes)}")
+    # Also print board/port blank stats
+    blank_board = sum(1 for sap_id, recs in sap_map.items()
+                      for r in recs if is_blank(r.get("RRH Connect Board ID","").strip()))
+    blank_port  = sum(1 for sap_id, recs in sap_map.items()
+                      for r in recs if is_blank(r.get("RRH Connect Port ID","").strip()))
+    print(f"Records with blank Board ID: {blank_board}, blank Port ID: {blank_port}")
     return results
+
 
 def lookup_sap(sap_id):
     parts      = sap_id.upper().split("-")
