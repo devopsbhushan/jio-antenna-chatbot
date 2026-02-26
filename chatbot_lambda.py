@@ -169,9 +169,8 @@ def get_blank_ret_records(state_name):
             port_id   = r.get("RRH Connect Port ID",  "").strip()
             ant_class = r.get("Antenna Classification","").strip()
 
-            # Collect sample values for CloudWatch debug
-            if len(sample_classes) < 30:
-                sample_classes.add(repr(ant_class))
+            # Always collect sample values for CloudWatch debug
+            sample_classes.add(repr(ant_class))
 
             if is_blank(board_id) and is_blank(port_id) and ant_class.upper() == "RET":
                 row = dict(r)               # ALL original columns
@@ -179,7 +178,14 @@ def get_blank_ret_records(state_name):
                 results.append(row)
 
     print(f"{state_name}: {total} records checked, {len(results)} matched")
-    print(f"Sample Antenna Classification values seen: {sample_classes}")
+    # Print ALL unique Antenna Classification values seen
+    print(f"ALL Antenna Classification values in {state_name}: {sorted(sample_classes)}")
+    # Also print board/port blank stats
+    blank_board = sum(1 for sap_id, recs in sap_map.items()
+                      for r in recs if is_blank(r.get("RRH Connect Board ID","").strip()))
+    blank_port  = sum(1 for sap_id, recs in sap_map.items()
+                      for r in recs if is_blank(r.get("RRH Connect Port ID","").strip()))
+    print(f"Records with blank Board ID: {blank_board}, blank Port ID: {blank_port}")
     return results
 
 
