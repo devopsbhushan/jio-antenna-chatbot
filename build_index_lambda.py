@@ -1,13 +1,13 @@
 import boto3, json, faiss, numpy as np, pickle
 import gc, re, math, hashlib, io, random
-from collections import Counter, defaultdict
+from collections import Counter
 
 BUCKET      = "chatbot-input-database"
 BASE_PREFIX = "processed/"
 INDEX_KEY   = "rag-index/faiss.index"
 IDF_KEY     = "rag-model/idf.pkl"
 META_KEY    = "rag-index/metadata.pkl"
-SAP_MAP_KEY = "rag-index/sap_map.pkl"
+SAP_PREFIX  = "rag-index/sap/"   # sap/MAHARASHTRA.pkl, sap/DELHI.pkl ...
 
 MAX_ROWS = 200000
 DIM      = 384
@@ -54,16 +54,7 @@ def text_to_vec(text, idf):
     if n > 1e-9: vec /= n
     return vec
 
-def iter_all_rows(idx_meta):
-    for state, meta in idx_meta["states"].items():
-        for i in range(1, meta["chunks"]+1):
-            rows = load_json(f"{BASE_PREFIX}{state}/chunk_{i:04d}.json")
-            for row in rows:
-                row["State"] = state
-                yield row
-
 def lambda_handler(event, context):
-    # Check remaining time helper
     def mins_left():
         return context.get_remaining_time_in_millis() / 60000
 
@@ -72,56 +63,64 @@ def lambda_handler(event, context):
     bucket_b  = []
     count_a   = count_b = 0
     doc_freq  = Counter()
-    sap_map   = defaultdict(list)
     total     = 0
+    states_saved = 0
 
-    print("Pass 1: reservoir sampling + IDF + SAP map (single pass)...")
+    print("Processing state by state...")
 
-    for row in iter_all_rows(idx_meta):
-        total += 1
-        text   = row_to_text(row)
-        doc_freq.update(set(tokenize(text)))
+    for state, meta in idx_meta["states"].items():
+        # Build SAP map for this state only
+        state_sap = {}
 
-        # SAP map — store only essential columns to save RAM
-        sap_id = row.get("SAP ID","").strip()
-        if sap_id:
-            sap_map[sap_id].append({c: row.get(c,"") for c in COLUMNS})
+        for i in range(1, meta["chunks"]+1):
+            rows = load_json(f"{BASE_PREFIX}{state}/chunk_{i:04d}.json")
+            for row in rows:
+                total += 1
+                row["State"] = state
+                text = row_to_text(row)
+                doc_freq.update(set(tokenize(text)))
 
-        # FAISS reservoir sample
-        entry = {c: row.get(c,"") for c in COLUMNS}
-        entry["_text"] = text
-        if has_alarm(row):
-            count_a += 1
-            if len(bucket_a) < CAP_A:
-                bucket_a.append(entry)
-            else:
-                r = random.randint(0, count_a-1)
-                if r < CAP_A: bucket_a[r] = entry
-        else:
-            count_b += 1
-            if len(bucket_b) < CAP_B:
-                bucket_b.append(entry)
-            else:
-                r = random.randint(0, count_b-1)
-                if r < CAP_B: bucket_b[r] = entry
+                # SAP map for this state
+                sap_id = row.get("SAP ID","").strip()
+                if sap_id:
+                    if sap_id not in state_sap:
+                        state_sap[sap_id] = []
+                    state_sap[sap_id].append({c: row.get(c,"") for c in COLUMNS})
 
-        if total % 300000 == 0:
-            print(f"  {total:,} rows | SAP IDs: {len(sap_map):,} | "
-                  f"time left: {mins_left():.1f} min")
-            gc.collect()
+                # FAISS reservoir sample
+                entry = {c: row.get(c,"") for c in COLUMNS}
+                entry["_text"] = text
+                if has_alarm(row):
+                    count_a += 1
+                    if len(bucket_a) < CAP_A:
+                        bucket_a.append(entry)
+                    else:
+                        r = random.randint(0, count_a-1)
+                        if r < CAP_A: bucket_a[r] = entry
+                else:
+                    count_b += 1
+                    if len(bucket_b) < CAP_B:
+                        bucket_b.append(entry)
+                    else:
+                        r = random.randint(0, count_b-1)
+                        if r < CAP_B: bucket_b[r] = entry
 
-    print(f"Pass 1 done: {total:,} rows | {len(sap_map):,} unique SAP IDs | "
-          f"time left: {mins_left():.1f} min")
+        # Save this state SAP map to S3 immediately — free RAM
+        buf = io.BytesIO()
+        pickle.dump(state_sap, buf)
+        s3.put_object(
+            Bucket=BUCKET,
+            Key=f"{SAP_PREFIX}{state}.pkl",
+            Body=buf.getvalue()
+        )
+        states_saved += 1
+        print(f"  Saved {state}: {len(state_sap)} SAP IDs | "
+              f"total rows: {total:,} | time left: {mins_left():.1f} min")
+        del state_sap, buf
+        gc.collect()
 
-    # Save SAP map FIRST (largest, save while we still have memory)
-    print("Saving SAP map to S3...")
-    buf = io.BytesIO()
-    pickle.dump(dict(sap_map), buf)
-    sap_size = len(buf.getvalue()) / 1024 / 1024
-    s3.put_object(Bucket=BUCKET, Key=SAP_MAP_KEY, Body=buf.getvalue())
-    print(f"SAP map saved: {len(sap_map):,} SAP IDs, {sap_size:.1f} MB")
-    del sap_map, buf
-    gc.collect()
+    print(f"Pass 1 done: {total:,} rows, {states_saved} states saved")
+    print(f"Time left: {mins_left():.1f} min")
 
     # Build IDF
     N   = total
@@ -133,7 +132,7 @@ def lambda_handler(event, context):
     s3.put_object(Bucket=BUCKET, Key=IDF_KEY, Body=buf.getvalue())
     print(f"IDF saved: {len(idf):,} terms | time left: {mins_left():.1f} min")
 
-    # FAISS index
+    # Build FAISS
     selected = (bucket_a + bucket_b)[:MAX_ROWS]
     del bucket_a, bucket_b
     gc.collect()
@@ -180,9 +179,5 @@ def lambda_handler(event, context):
     print(f"All done! Time left: {mins_left():.1f} min")
     return {
         "statusCode": 200,
-        "body": (
-            f"Indexed {len(selected):,} rows for FAISS. "
-            f"SAP map: {total:,} rows, {sap_size:.0f}MB. "
-            f"Total scanned: {total:,}."
-        )
+        "body": f"Done. {total:,} rows. {states_saved} state SAP maps saved. FAISS: {len(selected):,} rows."
     }
