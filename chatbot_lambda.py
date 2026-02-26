@@ -1,27 +1,42 @@
-# chatbot_lambda.py
-
 import boto3, json, faiss, numpy as np, pickle
-import os, re, hashlib, ssl
+import os, re, hashlib, ssl, io
 import urllib.request, urllib.error
 
 BUCKET   = os.environ["BUCKET"]
 GROQ_KEY = os.environ["GROQ_API_KEY"]
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
+SAP_PREFIX = "rag-index/sap/"
 DIM      = 384
 
 s3 = boto3.client("s3")
-_index   = None
-_idf     = None
-_meta    = None
-_sap_map = None   # SAP ID -> list of row dicts (instant lookup)
+_index    = None
+_idf      = None
+_meta     = None
+_sap_cache = {}   # state -> sap_map dict, cached after first load
 
 COLUMNS = [
-    "State", "SAP ID", "Sector Id", "Bands",
-    "RRH Connect Board ID", "RRH Connect Port ID",
-    "SF Antenna Model", "LSMR Antenna Type",
-    "Antenna Classification", "RRH Last Updated Time",
+    "State","SAP ID","Sector Id","Bands",
+    "RRH Connect Board ID","RRH Connect Port ID",
+    "SF Antenna Model","LSMR Antenna Type",
+    "Antenna Classification","RRH Last Updated Time",
     "Alarm details"
 ]
+
+# Map 2-letter state code from SAP ID to full state name
+# e.g. I-MH-... -> MH -> MAHARASHTRA
+STATE_CODE_MAP = {
+    "MH": "MAHARASHTRA", "DL": "DELHI", "KA": "KARNATAKA",
+    "TN": "TAMIL_NADU",  "GJ": "GUJARAT", "RJ": "RAJASTHAN",
+    "UP": "UTTAR_PRADESH_EAST", "UW": "UTTAR_PRADESH_WEST",
+    "WB": "WEST_BENGAL", "AP": "ANDHRA_PRADESH", "TS": "TELANGANA",
+    "MP": "MADHYA_PRADESH", "PB": "PUNJAB", "HR": "HARYANA",
+    "KL": "KERALA", "OR": "ODISHA", "BR": "BIHAR",
+    "JH": "JHARKHAND", "AS": "ASSAM", "JK": "JAMMU_KASHMIR",
+    "HP": "HIMACHAL_PRADESH", "UK": "UTTARAKHAND", "CH": "CHATTISGARH",
+    "NE": "NORTH_EAST", "MN": "MANIPUR", "TR": "TRIPURA",
+    "ML": "MEGHALAYA", "SK": "SIKKIM", "GA": "GOA",
+    "HM": "HIMACHAL_PRADESH", "NK": "KARNATAKA"
+}
 
 
 def _load_base():
@@ -39,13 +54,19 @@ def _load_base():
         _meta = pickle.loads(obj["Body"].read())
 
 
-def _load_sap_map():
-    global _sap_map
-    if _sap_map is None:
-        print("Loading SAP map...")
-        obj      = s3.get_object(Bucket=BUCKET, Key="rag-index/sap_map.pkl")
-        _sap_map = pickle.loads(obj["Body"].read())
-        print(f"SAP map loaded: {len(_sap_map):,} unique SAP IDs")
+def _load_state_sap(state_name):
+    """Load SAP map for one state — cached in memory after first load."""
+    if state_name in _sap_cache:
+        return _sap_cache[state_name]
+    try:
+        obj = s3.get_object(Bucket=BUCKET, Key=f"{SAP_PREFIX}{state_name}.pkl")
+        sap = pickle.loads(obj["Body"].read())
+        _sap_cache[state_name] = sap
+        print(f"Loaded SAP map for {state_name}: {len(sap)} SAP IDs")
+        return sap
+    except Exception as e:
+        print(f"Could not load SAP map for {state_name}: {e}")
+        return {}
 
 
 def tokenize(t):
@@ -54,6 +75,7 @@ def tokenize(t):
 
 
 def encode(text):
+    _load_base()
     vec = np.zeros(DIM, dtype=np.float32)
     for t in tokenize(text):
         idx = int(hashlib.md5(t.encode()).hexdigest(), 16) % DIM
@@ -67,6 +89,37 @@ def encode(text):
 def extract_sap_id(msg):
     m = re.search(r"I-[A-Z]{2}-[A-Z0-9]+-ENB-[0-9A-Z]+", msg.upper())
     return m.group(0) if m else None
+
+
+def lookup_sap(sap_id):
+    """Look up all records for a SAP ID by loading only its state file."""
+    parts = sap_id.upper().split("-")
+    # parts[1] is state code e.g. MH, DL, JK
+    state_code = parts[1] if len(parts) > 1 else ""
+    state_name = STATE_CODE_MAP.get(state_code, "")
+
+    if state_name:
+        sap_map = _load_state_sap(state_name)
+        records = sap_map.get(sap_id.upper(), [])
+        if records:
+            return records
+
+    # Fallback: try all state files until found
+    print(f"State code {state_code} not mapped, scanning all states...")
+    try:
+        resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=SAP_PREFIX)
+        for obj in resp.get("Contents", []):
+            key        = obj["Key"]
+            state_name = key.replace(SAP_PREFIX, "").replace(".pkl", "")
+            sap_map    = _load_state_sap(state_name)
+            records    = sap_map.get(sap_id.upper(), [])
+            if records:
+                print(f"Found {sap_id} in {state_name}")
+                return records
+    except Exception as e:
+        print(f"Fallback scan error: {e}")
+
+    return []
 
 
 def retrieve_semantic(query, top_k=20):
@@ -93,16 +146,16 @@ def ask_groq(question, docs, history, sap_id=None):
         system = (
             "You are a Jio antenna inventory assistant. "
             f"Write a site report for Site: {site} | State: {state}\n\n"
-            "List each sector-band combination:\n"
+            "List each sector-band:\n"
             "- Sector X | Band Y | Antenna: [model] | Alarm: [alarm or None]\n\n"
             "End with: Total X sectors, Y alarms active."
         )
     else:
         system = (
             "You are a Jio antenna inventory assistant. "
-            "Write a SHORT 3-5 line summary answering the question. "
+            "Write a SHORT 3-5 line summary. "
             "Highlight key patterns: alarms, states, bands. "
-            "Be concise — user sees full table separately."
+            "User sees full table separately — be concise."
         )
 
     payload = json.dumps({
@@ -158,10 +211,8 @@ def lambda_handler(event, context):
         sap_id = extract_sap_id(msg)
 
         if sap_id:
-            # Instant lookup from SAP map — no S3 scanning needed
-            _load_sap_map()
-            docs = _sap_map.get(sap_id, [])
-            print(f"SAP map lookup: {sap_id} -> {len(docs)} records")
+            docs = lookup_sap(sap_id)
+            print(f"SAP lookup: {sap_id} -> {len(docs)} records")
             if not docs:
                 return {
                     "statusCode": 200,
@@ -174,7 +225,6 @@ def lambda_handler(event, context):
                     })
                 }
         else:
-            # Semantic FAISS search for general questions
             docs = retrieve_semantic(msg, top_k=20)
 
         summary     = ask_groq(msg, docs, history, sap_id)
