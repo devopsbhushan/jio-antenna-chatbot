@@ -152,8 +152,9 @@ def is_blank(val):
 def get_blank_ret_records(state_name):
     """
     Load all records for a state and filter:
-    RRH Connect Board ID = '-' AND RRH Connect Port ID = '-'
-    AND Antenna Classification = '-'
+    RRH Connect Board ID = blank/'-'
+    AND RRH Connect Port ID = blank/'-'
+    AND Antenna Classification = 'RET'
     Returns list of dicts with State column included.
     """
     sap_map = _load_state_sap(state_name)
@@ -162,12 +163,12 @@ def get_blank_ret_records(state_name):
         for r in records:
             board_id  = r.get("RRH Connect Board ID", "").strip()
             port_id   = r.get("RRH Connect Port ID", "").strip()
-            ant_class = r.get("Antenna Classification", "").strip()
-            if is_blank(board_id) and is_blank(port_id) and is_blank(ant_class):
+            ant_class = r.get("Antenna Classification", "").strip().upper()
+            if is_blank(board_id) and is_blank(port_id) and ant_class == "RET":
                 row = {col: r.get(col, "") for col in COLUMNS}
                 row["State"] = state_name   # ensure state is filled
                 results.append(row)
-    print(f"Blank RET in {state_name}: {len(results)} records")
+    print(f"Blank RET (RET class) in {state_name}: {len(results)} records")
     return results
 
 
