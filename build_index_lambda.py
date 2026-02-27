@@ -1,5 +1,5 @@
 import boto3, json, faiss, numpy as np, pickle
-import gc, re, math, hashlib, io, random
+import gc, re, math, hashlib, io, random, csv, os
 from collections import Counter
 
 BUCKET      = "chatbot-input-database"
@@ -7,7 +7,9 @@ BASE_PREFIX = "processed/"
 INDEX_KEY   = "rag-index/faiss.index"
 IDF_KEY     = "rag-model/idf.pkl"
 META_KEY    = "rag-index/metadata.pkl"
-SAP_PREFIX  = "rag-index/sap/"   # sap/MAHARASHTRA.pkl, sap/DELHI.pkl ...
+SAP_PREFIX     = "rag-index/sap/"   # sap/MAHARASHTRA.pkl, sap/DELHI.pkl ...
+BLANK_RET_KEY  = "rag-exports/Blank_RET_All_States.csv"
+BLANK_RET_TMP  = "/tmp/blank_ret_all.csv"
 
 MAX_ROWS = 200000
 DIM      = 384
@@ -66,6 +68,16 @@ def text_to_vec(text, idf):
     if n > 1e-9: vec /= n
     return vec
 
+def is_blank(val):
+    return not val or str(val).strip() in ("", "-", "N/A", "null", "None", "nan", "0")
+
+def is_blank_ret(row):
+    """Row qualifies if: Antenna Classification=RET AND RET Connect Board/Port ID blank."""
+    ant = str(row.get("Antenna Classification","")).strip().upper()
+    if ant != "RET":
+        return False
+    return is_blank(row.get("RET Connect Board ID","")) and is_blank(row.get("RET Connect Port ID",""))
+
 def lambda_handler(event, context):
     def mins_left():
         return context.get_remaining_time_in_millis() / 60000
@@ -80,6 +92,12 @@ def lambda_handler(event, context):
 
     print("Processing state by state...")
 
+    # Open CSV for blank RET — write row by row, never accumulate in RAM
+    blank_ret_count = 0
+    csv_file  = open(BLANK_RET_TMP, "w", newline="", encoding="utf-8")
+    csv_writer = csv.DictWriter(csv_file, fieldnames=COLUMNS, extrasaction="ignore")
+    csv_writer.writeheader()
+
     for state, meta in idx_meta["states"].items():
         # Build SAP map for this state only
         state_sap = {}
@@ -91,6 +109,11 @@ def lambda_handler(event, context):
                 row["State"] = state
                 text = row_to_text(row)
                 doc_freq.update(set(tokenize(text)))
+
+                # Write to blank RET CSV immediately if qualifies
+                if is_blank_ret(row):
+                    csv_writer.writerow({c: row.get(c,"") for c in COLUMNS})
+                    blank_ret_count += 1
 
                 # SAP map for this state
                 sap_id = row.get("SAP ID","").strip()
@@ -130,6 +153,13 @@ def lambda_handler(event, context):
               f"total rows: {total:,} | time left: {mins_left():.1f} min")
         del state_sap, buf
         gc.collect()
+
+    # Close CSV and upload blank RET file to S3
+    csv_file.close()
+    print(f"Blank RET CSV: {blank_ret_count:,} rows written")
+    s3.upload_file(BLANK_RET_TMP, BUCKET, BLANK_RET_KEY)
+    os.remove(BLANK_RET_TMP)
+    print(f"Blank RET CSV uploaded to s3://{BUCKET}/{BLANK_RET_KEY}")
 
     print(f"Pass 1 done: {total:,} rows, {states_saved} states saved")
     print(f"Time left: {mins_left():.1f} min")
@@ -191,5 +221,5 @@ def lambda_handler(event, context):
     print(f"All done! Time left: {mins_left():.1f} min")
     return {
         "statusCode": 200,
-        "body": f"Done. {total:,} rows. {states_saved} state SAP maps saved. FAISS: {len(selected):,} rows."
+        "body": f"Done. {total:,} rows. {states_saved} SAP maps saved. {blank_ret_count:,} blank RET rows pre-built. FAISS: {len(selected):,} rows."
     }
