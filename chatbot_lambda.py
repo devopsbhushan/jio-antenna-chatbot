@@ -5,7 +5,8 @@ import urllib.request, urllib.error
 BUCKET     = os.environ["BUCKET"]
 GROQ_KEY   = os.environ["GROQ_API_KEY"]
 GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
-SAP_PREFIX = "rag-index/sap/"
+SAP_PREFIX    = "rag-index/sap/"
+BLANK_RET_KEY = "rag-exports/Blank_RET_All_States.csv"
 DIM        = 384
 
 s3 = boto3.client("s3")
@@ -295,67 +296,25 @@ def lambda_handler(event, context):
             ))
 
             if all_states_requested:
-                # Stream state-by-state → write CSV to /tmp → upload to S3 → presigned URL
-                import csv, tempfile
-                tmp_path = "/tmp/Blank_RET_All_States.csv"
-                s3_key   = "rag-exports/Blank_RET_All_States.csv"
-                total_written = 0
-
+                # Pre-built at index time — just return presigned URL instantly
                 try:
-                    resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=SAP_PREFIX)
-                    state_files = [
-                        o["Key"].replace(SAP_PREFIX,"").replace(".pkl","")
-                        for o in resp.get("Contents",[])
-                        if o["Key"].endswith(".pkl")
-                    ]
-                    print(f"All-states RET: {len(state_files)} states to scan")
-
-                    with open(tmp_path, "w", newline="", encoding="utf-8") as f:
-                        writer = None
-                        for st in state_files:
-                            rows = get_blank_ret_records(st)
-                            if not rows:
-                                continue
-                            if writer is None:
-                                writer = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction="ignore")
-                                writer.writeheader()
-                            for r in rows:
-                                writer.writerow({c: r.get(c,"") for c in COLUMNS})
-                            total_written += len(rows)
-                            print(f"  {st}: {len(rows)} rows, total {total_written}")
-                            del rows
-                            # Clear state cache to free RAM
-                            if st in _sap_cache:
-                                del _sap_cache[st]
-
-                    print(f"CSV written: {total_written} rows")
-
-                    # Upload to S3
-                    s3.upload_file(tmp_path, BUCKET, s3_key)
-
-                    # Generate presigned URL valid 1 hour
                     url = s3.generate_presigned_url(
                         "get_object",
-                        Params={"Bucket": BUCKET, "Key": s3_key},
+                        Params={"Bucket": BUCKET, "Key": BLANK_RET_KEY},
                         ExpiresIn=3600
                     )
-                    print(f"Presigned URL generated")
-
                     return {"statusCode": 200, "body": json.dumps({
-                        "summary":   f"Found {total_written:,} blank RET records across all states. Click the button below to download.",
-                        "records":   [],
-                        "columns":   COLUMNS,
-                        "retrieved": total_written,
-                        "history":   history,
-                        "download":  False,
-                        "excel":     False,
+                        "summary":       "Blank RET data for all states is ready. Click below to download.",
+                        "records":       [],
+                        "columns":       COLUMNS,
+                        "retrieved":     0,
+                        "history":       history,
+                        "download":      False,
                         "presigned_url": url,
-                        "filename":  "Blank_RET_All_States.csv"
+                        "filename":      "Blank_RET_All_States.csv"
                     })}
-
                 except Exception as e:
-                    print(f"All-states error: {e}")
-                    return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
+                    return {"statusCode": 500, "body": json.dumps({"error": f"Could not generate download link: {e}"})}
 
             elif state_name:
                 docs     = get_blank_ret_records(state_name)
