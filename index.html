@@ -173,7 +173,7 @@
     "Antenna Classification","RRH Last Updated Time","Alarm details"
   ];
 
-  let hist = [], busy = false;
+  let hist = [], busy = false, lastMsg = '';
 
   function qa(el){ document.getElementById('inp').value = el.textContent.trim(); send(); }
 
@@ -188,228 +188,127 @@
     return !l || l==='-' || l==='none' || l==='null' || l==='n/a';
   }
 
-  // Build sector-wise summary table from records — no Groq needed
+  const SECTOR_MAP = {'3':'0','4':'1','5':'2'};
+
   function buildSectorSummary(sapId, records){
     if (!records || records.length === 0) return '';
-
-    // Sector mapping: 3→0, 4→1, 5→2
-    const SECTOR_MAP = {'3':'0', '4':'1', '5':'2'};
-
-    // Group by mapped sector
-    const sectors = {};
-    const alarms  = [];
-
-    records.forEach(r => {
-      const rawSec  = (r['Sector Id'] || '?').trim();
-      const sec     = SECTOR_MAP[rawSec] || rawSec;   // apply mapping
-      const antenna = (r['LSMR Antenna Type'] || r['SF Antenna Model'] || '').trim();
-      const alarm   = (r['Alarm details'] || '').trim();
-      const band    = (r['Bands'] || '').trim();
-
+    const sectors = {}, alarms = [];
+    records.forEach(function(r){
+      const rawSec  = (r['Sector Id']||'?').trim();
+      const sec     = SECTOR_MAP[rawSec] || rawSec;
+      const antenna = (r['LSMR Antenna Type']||r['SF Antenna Model']||'').trim();
+      const alarm   = (r['Alarm details']||'').trim();
+      const band    = (r['Bands']||'').trim();
       if (!sectors[sec]) sectors[sec] = new Set();
-      if (antenna) sectors[sec].add(antenna);   // Set auto-deduplicates
-
-      if (!isNoAlarm(alarm)){
-        alarms.push({ sec, band, alarm });
-      }
+      if (antenna) sectors[sec].add(antenna);
+      if (!isNoAlarm(alarm)) alarms.push({sec:sec, band:band, alarm:alarm});
     });
-
-    // Only show Sector 0, 1, 2 (mapped)
-    const secKeys = ['0','1','2'].filter(s => sectors[s]);
-
-    // Build header row: Sector 0 | Sector 1 | ... | Alarms
-    const ths = secKeys.map(s => `<th>Sector ${esc(s)}</th>`).join('') + '<th>Alarms</th>';
-
-    // Build one data row
-    const antennaCells = secKeys.map(s => {
-      const list = [...sectors[s]].sort();
-      if (list.length === 0) return `<td><span class="no-alarm">—</span></td>`;
-      const items = list.map(a => `<div class="antenna-item">${esc(a)}</div>`).join('');
-      return `<td>${items}</td>`;
+    const secKeys = ['0','1','2'].filter(function(s){ return sectors[s]; });
+    let ths = secKeys.map(function(s){ return '<th>Sector '+esc(s)+'</th>'; }).join('') + '<th>Alarms</th>';
+    let cells = secKeys.map(function(s){
+      const list = Array.from(sectors[s]).sort();
+      if (!list.length) return '<td><em style="color:#bbb">—</em></td>';
+      return '<td>' + list.map(function(a){ return '<div class="antenna-item">'+esc(a)+'</div>'; }).join('') + '</td>';
     }).join('');
-
-    // Alarm cell
     let alarmCell;
-    if (alarms.length === 0){
-      alarmCell = `<td class="alarm-col"><span class="no-alarm">✅ No alarms</span></td>`;
+    if (!alarms.length){
+      alarmCell = '<td class="alarm-col"><span class="no-alarm">No alarms</span></td>';
     } else {
-      const items = alarms.map(a =>
-        `<div class="alarm-item"><span class="alarm-dot">⚠</span>Sector ${esc(a.sec)}, Band ${esc(a.band)} — ${esc(a.alarm)}</div>`
-      ).join('');
-      alarmCell = `<td class="alarm-col">${items}</td>`;
+      alarmCell = '<td class="alarm-col">' + alarms.map(function(a){
+        return '<div class="alarm-item"><span class="alarm-dot">&#9888;</span>Sector '+esc(a.sec)+', Band '+esc(a.band)+' — '+esc(a.alarm)+'</div>';
+      }).join('') + '</td>';
     }
-
-    return `
-      <div class="summary-box">
-        <div class="sap-title">📡 SAP ID: ${esc(sapId)}</div>
-        <div class="sector-summary-title">Sector-wise Unique Antenna Summary</div>
-        <div class="summary-scroll">
-          <table class="sector-grid">
-            <thead><tr>${ths}</tr></thead>
-            <tbody><tr>${antennaCells}${alarmCell}</tr></tbody>
-          </table>
-        </div>
-      </div>`;
+    return '<div class="summary-box">'
+      + '<div class="sap-title">&#128225; SAP ID: '+esc(sapId)+'</div>'
+      + '<div class="sector-summary-title">Sector-wise Unique Antenna Summary</div>'
+      + '<div class="summary-scroll"><table class="sector-grid"><thead><tr>'+ths+'</tr></thead>'
+      + '<tbody><tr>'+cells+alarmCell+'</tr></tbody></table></div></div>';
   }
 
-  // General text summary (for non-SAP queries)
   function buildTextSummary(text){
-    return `
-      <div class="summary-box" style="border-left:4px solid #d50000;background:#fff8f8;border-radius:12px 12px 0 0">
-        <div class="box-label" style="color:#d50000;margin-bottom:8px">🤖 AI Summary</div>
-        <div style="font-size:13.5px;color:#222;line-height:1.8;white-space:pre-wrap">${esc(text)}</div>
-      </div>`;
+    return '<div class="summary-box" style="border-left:4px solid #d50000;background:#fff8f8;border-radius:12px 12px 0 0">'
+      + '<div class="box-label" style="color:#d50000;margin-bottom:8px">&#129302; AI Summary</div>'
+      + '<div style="font-size:13.5px;color:#222;line-height:1.8;white-space:pre-wrap">'+esc(text)+'</div>'
+      + '</div>';
   }
 
   function cellClass(col, val){
-    const v = (val||'').trim().toLowerCase();
     if (!val || !val.trim() || val.trim()==='-') return 'na';
-    if (col === 'State')  return 'state';
-    if (col === 'SAP ID') return 'sapid';
-    if (col === 'Alarm details') return isNoAlarm(val) ? 'ok' : 'alarm';
+    if (col==='State')  return 'state';
+    if (col==='SAP ID') return 'sapid';
+    if (col==='Alarm details') return isNoAlarm(val) ? 'ok' : 'alarm';
     return '';
   }
 
   function buildRawTable(records){
-    if (!records || records.length === 0)
+    if (!records || records.length===0)
       return '<div class="no-data">No records found.</div>';
-    const ths = COLS.map(c => `<th>${esc(c)}</th>`).join('');
-    const trs = records.map(r => {
-      const tds = COLS.map(col => {
-        const raw  = r[col] == null ? '' : String(r[col]);
+    let ths = COLS.map(function(c){ return '<th>'+esc(c)+'</th>'; }).join('');
+    let trs = records.map(function(r){
+      let tds = COLS.map(function(col){
+        const raw  = r[col]==null ? '' : String(r[col]);
         const disp = raw.trim() || 'N/A';
-        return `<td class="${cellClass(col, raw)}" title="${esc(raw)}">${esc(disp)}</td>`;
+        return '<td class="'+cellClass(col,raw)+'" title="'+esc(raw)+'">'+esc(disp)+'</td>';
       }).join('');
-      return `<tr>${tds}</tr>`;
+      return '<tr>'+tds+'</tr>';
     }).join('');
-    return `<div class="table-scroll">
-      <table><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>
-    </div>`;
+    return '<div class="table-scroll"><table><thead><tr>'+ths+'</tr></thead><tbody>'+trs+'</tbody></table></div>';
   }
-
-  function addUser(msg){
-    const c = document.getElementById('chat');
-    c.innerHTML += `<div class="user-wrap"><div class="user-bubble">${esc(msg)}</div></div>`;
-    c.scrollTop = c.scrollHeight;
-  }
-
-  function addTyping(){
-    const c = document.getElementById('chat');
-    const id = 'tp'+Date.now();
-    c.innerHTML += `<div class="typing-card" id="${id}">
-      <div class="spin"></div>Searching antenna records...</div>`;
-    c.scrollTop = c.scrollHeight;
-    return id;
-  }
-
-  function rm(id){ const e=document.getElementById(id); if(e) e.remove(); }
 
   function extractSapId(msg){
     const m = msg.toUpperCase().match(/I-[A-Z]{2}-[A-Z0-9]+-ENB-[0-9A-Z]+/);
     return m ? m[0] : null;
   }
 
+  function addUser(msg){
+    const c = document.getElementById('chat');
+    c.innerHTML += '<div class="user-wrap"><div class="user-bubble">'+esc(msg)+'</div></div>';
+    c.scrollTop = c.scrollHeight;
+  }
+
+  function addTyping(){
+    const c = document.getElementById('chat');
+    const id = 'tp'+Date.now();
+    c.innerHTML += '<div class="typing-card" id="'+id+'"><div class="spin"></div>Searching antenna records...</div>';
+    c.scrollTop = c.scrollHeight;
+    return id;
+  }
+
+  function rm(id){ const e=document.getElementById(id); if(e) e.remove(); }
+
   function addCard(msg, summary, records, count, presignedUrl, filename){
-    const c      = document.getElementById('chat');
-    const sapId  = extractSapId(msg);
-    const sumHtml = sapId && records && records.length > 0
+    const c       = document.getElementById('chat');
+    const sapId   = extractSapId(msg);
+    const sumHtml = (sapId && records && records.length > 0)
       ? buildSectorSummary(sapId, records)
       : buildTextSummary(summary);
 
-    const rawTbl = buildRawTable(records);
+    let html = '<div class="bot-card">' + sumHtml;
 
-    const dlBtnHtml = presignedUrl
-      ? `<div style="padding:10px 16px;background:#f1f8f1;border-top:1px solid #c8e6c9">
-           <a href="${presignedUrl}" target="_blank" class="dl-btn">⬇ Download CSV (${count} rows)</a>
-           <span style="font-size:11px;color:#888;margin-left:10px">Link expires in 1 hour</span>
-         </div>`
-      : '';
+    if (presignedUrl){
+      html += '<div style="padding:12px 16px;background:#f1f8f1;border-top:1px solid #c8e6c9">'
+            + '<a href="'+esc(presignedUrl)+'" target="_blank" class="dl-btn">&#11015; Download CSV ('+count+' rows)</a>'
+            + '<span style="font-size:11px;color:#888;margin-left:10px">Link expires in 1 hour</span>'
+            + '</div>';
+    } else {
+      const rawTbl = buildRawTable(records);
+      html += '<div class="table-section">'
+            + '<div class="table-bar">'
+            + '<span class="box-label">&#128202; Raw Data</span>'
+            + '<span class="rec-count">'+count+' record'+(count!==1?'s':'')+' found</span>'
+            + '</div>' + rawTbl + '</div>';
+    }
 
-    c.innerHTML += `
-      <div class="bot-card">
-        ${sumHtml}
-        ${presignedUrl ? dlBtnHtml : `
-        <div class="table-section">
-          <div class="table-bar">
-            <span class="box-label">📊 Raw Data</span>
-            <span class="rec-count">${count} record${count!==1?'s':''} found</span>
-          </div>
-          ${rawTbl}
-        </div>`}
-      </div>`;
+    html += '</div>';
+    c.innerHTML += html;
     c.scrollTop = c.scrollHeight;
-  
+  }
+
   function addError(msg){
     const c = document.getElementById('chat');
-    c.innerHTML += `<div class="bot-card">
-      <div class="summary-box" style="border-left:4px solid #c62828;background:#fff8f8;border-radius:12px">
-        <div style="color:#c62828;font-size:13.5px">⚠ ${esc(msg)}</div>
-      </div></div>`;
+    c.innerHTML += '<div class="bot-card"><div class="summary-box" style="border-left:4px solid #c62828;background:#fff8f8;border-radius:12px">'
+      + '<div style="color:#c62828;font-size:13.5px">&#9888; '+esc(msg)+'</div></div></div>';
     c.scrollTop = c.scrollHeight;
-  }
-
-  let lastMsg = '';
-
-  function downloadExcel(records, filename, state) {
-    // Build worksheet from records
-    if (!records || records.length === 0) return;
-
-    // Get all column headers from first record
-    const headers = Object.keys(records[0]);
-
-    // Build rows array
-    const wsData = [headers];
-    records.forEach(r => {
-      wsData.push(headers.map(h => r[h] || ''));
-    });
-
-    const ws = XLSX.utils.aoa_to_sheet(wsData);
-
-    // Column widths
-    const colWidths = headers.map(h => ({ wch: Math.max(h.length + 2, 14) }));
-    ws['!cols'] = colWidths;
-
-    // Style header row
-    headers.forEach((h, i) => {
-      const cell = XLSX.utils.encode_cell({r: 0, c: i});
-      if (!ws[cell]) return;
-      ws[cell].s = {
-        font: { bold: true, color: { rgb: 'FFFFFF' } },
-        fill: { fgColor: { rgb: '1A237E' } },
-        alignment: { horizontal: 'center' }
-      };
-    });
-
-    const wb = XLSX.utils.book_new();
-    const sheetName = state ? state.replace(/_/g,' ').substring(0,30) : 'Blank RET';
-    XLSX.utils.book_append_sheet(wb, ws, sheetName);
-
-    XLSX.writeFile(wb, filename);
-    console.log('Downloaded:', filename, records.length, 'rows');
-  }
-
-  function downloadExcel(records, filename){
-    if (!records || records.length === 0) return;
-
-    // Use ALL columns from the data — State first, then rest in original order
-    const allKeys = ["State"];
-    records.forEach(r => {
-      Object.keys(r).forEach(k => {
-        if (k !== "State" && !allKeys.includes(k)) allKeys.push(k);
-      });
-    });
-
-    const wsData = [allKeys];
-    records.forEach(r => wsData.push(allKeys.map(c => r[c] != null ? String(r[c]) : '')));
-
-    const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.aoa_to_sheet(wsData);
-
-    // Style header row bold + auto column widths
-    ws['!cols'] = allKeys.map(k => ({ wch: Math.max(k.length + 2, 15) }));
-
-    XLSX.utils.book_append_sheet(wb, ws, 'Blank RET Data');
-    XLSX.writeFile(wb, filename || 'export.xlsx');
   }
 
   async function send(){
@@ -417,7 +316,7 @@
     const inp = document.getElementById('inp');
     const msg = inp.value.trim();
     if (!msg) return;
-    lastMsg  = msg;
+    lastMsg   = msg;
     inp.value = '';
     addUser(msg);
     busy = true;
@@ -433,25 +332,23 @@
       });
       rm(tid);
       const raw = await res.text();
-      if (!res.ok){ addError('Server error ' + res.status + ': ' + raw); }
+      if (!res.ok){ addError('Server error '+res.status+': '+raw); }
       else {
         let d;
         try { d = JSON.parse(raw); } catch(e){ addError('Parse error: '+raw); return; }
         if (d.error){ addError(d.error); }
         else {
-          const summary   = d.summary || d.reply || '';
-          const records   = Array.isArray(d.records) ? d.records : [];
-          const retrieved = typeof d.retrieved==='number' ? d.retrieved : records.length;
-          if (d.download && records.length > 0) {
-            downloadExcel(records, d.filename || 'Blank_RET.xlsx', d.state || '');
-          }
-          // All-states: show presigned S3 download link
-          addCard(lastMsg, summary, records, retrieved, d.presigned_url, d.filename);
+          const summary      = d.summary || d.reply || '';
+          const records      = Array.isArray(d.records) ? d.records : [];
+          const retrieved    = typeof d.retrieved==='number' ? d.retrieved : records.length;
+          const presignedUrl = d.presigned_url || '';
+          const filename     = d.filename || '';
+          addCard(lastMsg, summary, records, retrieved, presignedUrl, filename);
           hist = Array.isArray(d.history) ? d.history : [];
         }
       }
     } catch(e){
-      rm(tid); addError('Connection error: ' + e.message);
+      rm(tid); addError('Connection error: '+e.message);
     }
 
     busy = false;
@@ -461,17 +358,15 @@
 
   function clr(){
     hist = []; lastMsg = '';
-    document.getElementById('chat').innerHTML = `
-      <div class="welcome">
-        <p class="welcome-text">Chat cleared. Ask a new question!</p>
-        <div class="chips">
-          <span class="chip" onclick="qa(this)">Show I-UW-JSWT-ENB-9004</span>
-          <span class="chip" onclick="qa(this)">Show I-JK-SGAR-ENB-0336</span>
-          <span class="chip" onclick="qa(this)">Sites with alarms in Maharashtra</span>
-          <span class="chip" onclick="qa(this)">Show VSWR alarm sites</span>
-        </div>
-      </div>`;
+    document.getElementById('chat').innerHTML = '<div class="welcome">'
+      + '<p class="welcome-text">Chat cleared. Ask a new question!</p>'
+      + '<div class="chips">'
+      + '<span class="chip" onclick="qa(this)">Show I-UW-JSWT-ENB-9004</span>'
+      + '<span class="chip" onclick="qa(this)">Show I-JK-SGAR-ENB-0336</span>'
+      + '<span class="chip" onclick="qa(this)">Blank RET data for Maharashtra</span>'
+      + '<span class="chip" onclick="qa(this)">Sites with alarms in Maharashtra</span>'
+      + '</div></div>';
   }
-</script>
+</script></script>
 </body>
 </html>
