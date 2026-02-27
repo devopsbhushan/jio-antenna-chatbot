@@ -295,8 +295,12 @@ def lambda_handler(event, context):
             ))
 
             if all_states_requested:
-                # Collect from all available state SAP files
-                docs = []
+                # Stream state-by-state → write CSV to /tmp → upload to S3 → presigned URL
+                import csv, tempfile
+                tmp_path = "/tmp/Blank_RET_All_States.csv"
+                s3_key   = "rag-exports/Blank_RET_All_States.csv"
+                total_written = 0
+
                 try:
                     resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=SAP_PREFIX)
                     state_files = [
@@ -304,15 +308,54 @@ def lambda_handler(event, context):
                         for o in resp.get("Contents",[])
                         if o["Key"].endswith(".pkl")
                     ]
-                    print(f"All-states RET: scanning {len(state_files)} states")
-                    for st in state_files:
-                        docs.extend(get_blank_ret_records(st))
-                        print(f"  {st}: running total {len(docs)}")
+                    print(f"All-states RET: {len(state_files)} states to scan")
+
+                    with open(tmp_path, "w", newline="", encoding="utf-8") as f:
+                        writer = None
+                        for st in state_files:
+                            rows = get_blank_ret_records(st)
+                            if not rows:
+                                continue
+                            if writer is None:
+                                writer = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction="ignore")
+                                writer.writeheader()
+                            for r in rows:
+                                writer.writerow({c: r.get(c,"") for c in COLUMNS})
+                            total_written += len(rows)
+                            print(f"  {st}: {len(rows)} rows, total {total_written}")
+                            del rows
+                            # Clear state cache to free RAM
+                            if st in _sap_cache:
+                                del _sap_cache[st]
+
+                    print(f"CSV written: {total_written} rows")
+
+                    # Upload to S3
+                    s3.upload_file(tmp_path, BUCKET, s3_key)
+
+                    # Generate presigned URL valid 1 hour
+                    url = s3.generate_presigned_url(
+                        "get_object",
+                        Params={"Bucket": BUCKET, "Key": s3_key},
+                        ExpiresIn=3600
+                    )
+                    print(f"Presigned URL generated")
+
+                    return {"statusCode": 200, "body": json.dumps({
+                        "summary":   f"Found {total_written:,} blank RET records across all states. Click the button below to download.",
+                        "records":   [],
+                        "columns":   COLUMNS,
+                        "retrieved": total_written,
+                        "history":   history,
+                        "download":  False,
+                        "excel":     False,
+                        "presigned_url": url,
+                        "filename":  "Blank_RET_All_States.csv"
+                    })}
+
                 except Exception as e:
                     print(f"All-states error: {e}")
-
-                label    = "All States"
-                filename = "Blank_RET_All_States.xlsx"
+                    return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
 
             elif state_name:
                 docs     = get_blank_ret_records(state_name)
