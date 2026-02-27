@@ -1,5 +1,5 @@
 import boto3, json, faiss, numpy as np, pickle
-import os, re, hashlib, ssl, io
+import os, re, hashlib, ssl, io, csv
 import urllib.request, urllib.error
 
 BUCKET     = os.environ["BUCKET"]
@@ -336,16 +336,34 @@ def lambda_handler(event, context):
                     "download":  False
                 })}
 
+            # Write CSV to S3 (avoids 6MB Lambda response limit)
+            csv_key = f"exports/Blank_RET_{label}.csv"
+            buf = io.StringIO()
+            writer = csv.DictWriter(buf, fieldnames=COLUMNS, extrasaction="ignore")
+            writer.writeheader()
+            for row in docs:
+                writer.writerow({c: row.get(c, "") for c in COLUMNS})
+            s3.put_object(
+                Bucket=BUCKET,
+                Key=csv_key,
+                Body=buf.getvalue().encode("utf-8"),
+                ContentType="text/csv"
+            )
+            presigned_url = s3.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": BUCKET, "Key": csv_key},
+                ExpiresIn=3600
+            )
+            print(f"CSV saved: {csv_key}, {len(docs)} rows, URL generated")
             return {"statusCode": 200, "body": json.dumps({
-                "summary":   f"Found {len(docs):,} blank RET records for {label}. Excel downloading now.",
-                "records":   docs,
-                "columns":   COLUMNS,
-                "retrieved": len(docs),
-                "history":   history,
-                "download":  True,
-                "excel":     True,
-                "state":     label,
-                "filename":  filename
+                "summary":       f"Found {len(docs):,} blank RET records for {label}. Click the link to download.",
+                "records":       [],
+                "columns":       COLUMNS,
+                "retrieved":     len(docs),
+                "history":       history,
+                "download":      False,
+                "presigned_url": presigned_url,
+                "filename":      f"Blank_RET_{label}.csv"
             })}
 
         # ── SAP ID lookup ──
