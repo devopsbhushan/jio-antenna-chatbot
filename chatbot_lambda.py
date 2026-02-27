@@ -184,7 +184,7 @@ def get_blank_ret_records(state_name):
             # Always collect sample values for CloudWatch debug
             sample_classes.add(repr(ant_class))
 
-            if is_blank(ret_board) and is_blank(ret_port) and ant_class.upper() == "RET":
+            if ret_board == "-" and ret_port == "-" and ant_class.upper() == "RET":
                 row = dict(r)               # ALL original columns
                 row["State"] = state_name   # ensure State is set
                 results.append(row)
