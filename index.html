@@ -318,37 +318,27 @@
 
     const rawTbl = buildRawTable(records);
 
-    // Download button if blank RET query
-    const dlId  = 'dl_' + Date.now();
-    const dlBtn = doDownload && records.length > 0
-      ? `<button class="dl-btn" id="${dlId}">⬇ Download Excel (${count} records)</button>`
+    const dlBtnHtml = presignedUrl
+      ? `<div style="padding:10px 16px;background:#f1f8f1;border-top:1px solid #c8e6c9">
+           <a href="${presignedUrl}" target="_blank" class="dl-btn">⬇ Download CSV (${count} rows)</a>
+           <span style="font-size:11px;color:#888;margin-left:10px">Link expires in 1 hour</span>
+         </div>`
       : '';
 
     c.innerHTML += `
       <div class="bot-card">
         ${sumHtml}
-        ${dlBtn}
-        ${doDownload ? '' : `
+        ${presignedUrl ? dlBtnHtml : `
         <div class="table-section">
           <div class="table-bar">
             <span class="box-label">📊 Raw Data</span>
             <span class="rec-count">${count} record${count!==1?'s':''} found</span>
-            ${presignedUrl ? '<a href="' + presignedUrl + '" target="_blank" class="dl-btn">⬇ Download CSV (' + count + ' rows)</a>' : ''}
           </div>
           ${rawTbl}
         </div>`}
       </div>`;
     c.scrollTop = c.scrollHeight;
-
-    // Bind download button — no auto-download, manual only
-    if (doDownload && records.length > 0){
-      const btn = document.getElementById(dlId);
-      if (btn) btn.onclick = () => downloadExcel(records, filename || 'Blank_RET.xlsx');
-    }
-  }
-
-
-
+  
   function addError(msg){
     const c = document.getElementById('chat');
     c.innerHTML += `<div class="bot-card">
