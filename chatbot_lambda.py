@@ -225,31 +225,51 @@ def lookup_sap(sap_id):
     return []
 
 
-def retrieve_semantic(query, top_k=20):
+def retrieve_semantic(query, top_k=20, score_threshold=1.5):
+    """
+    Returns records whose L2 distance is below threshold.
+    Lower L2 = more similar. Typical range 0.0 (exact) to 2.0 (unrelated).
+    threshold=1.5 filters out clearly unrelated results.
+    """
     _load_base()
-    _, I = _index.search(encode(query), top_k)
-    return [_meta[i] for i in I[0] if i != -1 and i < len(_meta)]
+    D, I = _index.search(encode(query), top_k)
+    results = []
+    for dist, idx in zip(D[0], I[0]):
+        if idx == -1 or idx >= len(_meta):
+            continue
+        if dist <= score_threshold:
+            results.append(_meta[idx])
+    print(f"Semantic search: {len(results)}/{top_k} results within threshold {score_threshold} (distances: {D[0][:5].tolist()})")
+    return results
 
 
 def ask_groq(question, docs, history):
+    if not docs:
+        return "No matching records found in the database for this query."
+
     ctx = "\n".join([
-        f"Sector:{r.get('Sector Id','N/A')} | "
-        f"Band:{r.get('Bands','N/A')} | "
-        f"LSMR:{r.get('LSMR Antenna Type','N/A')} | "
-        f"Alarm:{r.get('Alarm details','N/A')}"
+        f"State:{r.get('State','N/A')} | SAP:{r.get('SAP ID','N/A')} | "
+        f"Sector:{r.get('Sector Id','N/A')} | Band:{r.get('Bands','N/A')} | "
+        f"LSMR:{r.get('LSMR Antenna Type','N/A')} | Alarm:{r.get('Alarm details','N/A')}"
         for r in docs[:20] if r
     ])
+
+    system = (
+        "You are a Jio antenna inventory assistant. "
+        "Answer ONLY using the data provided below. "
+        "Do NOT invent, assume, or add any information not present in the data. "
+        "If the data does not contain enough information to answer, say so clearly. "
+        "Be concise: 2-4 lines max. No bullet points."
+    )
+
     payload = json.dumps({
         "model": "llama-3.1-8b-instant",
         "messages": [
-            {"role": "system", "content":
-             "You are a Jio antenna inventory assistant. "
-             "Write a SHORT 3-5 line summary answering the question. "
-             "Highlight key patterns: alarms, states, bands. Be concise."}
+            {"role": "system", "content": system}
         ] + history + [
-            {"role": "user", "content": f"Question: {question}\n\nData:\n{ctx}"}
+            {"role": "user", "content": f"Question: {question}\n\nDatabase records:\n{ctx}"}
         ],
-        "max_tokens": 300, "temperature": 0.1
+        "max_tokens": 300, "temperature": 0.0
     }).encode("utf-8")
     ctx_ssl = ssl.create_default_context()
     try:
@@ -382,15 +402,23 @@ def lambda_handler(event, context):
 
         # ── Semantic search ──
         else:
-            docs    = retrieve_semantic(msg, top_k=20)
+            docs = retrieve_semantic(msg, top_k=20, score_threshold=1.5)
+
+            if not docs:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary":   "No closely matching records found. Try a more specific query — e.g. a SAP ID, state name, band, or alarm type.",
+                    "records":   [], "columns": DISPLAY_COLUMNS,
+                    "retrieved": 0,  "history": history, "download": False
+                })}
+
             summary = ask_groq(msg, docs, history)
             h2 = (history + [
                 {"role": "user", "content": msg},
                 {"role": "assistant", "content": summary}
             ])[-6:]
             return {"statusCode": 200, "body": json.dumps({
-                "summary": summary, "records": docs, "columns": COLUMNS,
-                "retrieved": len(docs), "history": h2, "download": False
+                "summary": summary, "records": [{c: r.get(c,"") for c in DISPLAY_COLUMNS} for r in docs],
+                "columns": DISPLAY_COLUMNS, "retrieved": len(docs), "history": h2, "download": False
             })}
 
     except Exception as e:
