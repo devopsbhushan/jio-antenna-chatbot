@@ -1,6 +1,7 @@
 import boto3, json, faiss, numpy as np, pickle
 import os, re, hashlib, ssl, io, csv
 import urllib.request, urllib.error
+from datetime import datetime, timedelta
 
 BUCKET     = os.environ["BUCKET"]
 GROQ_KEY   = os.environ["GROQ_API_KEY"]
@@ -183,6 +184,53 @@ def is_blank_ret_query(msg):
 
 def is_blank(val):
     return not val or val.strip() in ("", "-", "N/A", "null", "None", "nan", "0")
+
+
+def parse_date(val):
+    """Parse ISO datetime string, return datetime or None."""
+    if not val:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ",
+                "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(str(val).strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def filter_and_sort(results):
+    """
+    1. Keep only records within 15 days of the most recent RRH Last Updated Time.
+    2. Sort by SAP ID, then Sector Id numerically.
+    """
+    if not results:
+        return results
+
+    # Parse all dates
+    all_dates = [
+        parse_date(r.get("RRH Last Updated Time", ""))
+        for r in results
+        if parse_date(r.get("RRH Last Updated Time", ""))
+    ]
+
+    if all_dates:
+        latest_date = max(all_dates)
+        cutoff_date = latest_date - timedelta(days=15)
+        results = [
+            r for r in results
+            if parse_date(r.get("RRH Last Updated Time", "")) and
+               parse_date(r.get("RRH Last Updated Time", "")) >= cutoff_date
+        ]
+
+    # Sort by SAP ID, then Sector Id numerically
+    results.sort(key=lambda x: (
+        x.get("SAP ID", ""),
+        int(x.get("Sector Id", 0)) if str(x.get("Sector Id", "")).isdigit() else 999
+    ))
+
+    return results
 
 
 def get_blank_ret_records(state_name):
@@ -412,7 +460,7 @@ def lambda_handler(event, context):
 
         # ── SAP ID lookup ──
         elif sap_id:
-            docs = lookup_sap(sap_id)
+            docs = filter_and_sort(lookup_sap(sap_id))
             if not docs:
                 return {"statusCode": 200, "body": json.dumps({
                     "summary": f"No records found for SAP ID {sap_id}.",
