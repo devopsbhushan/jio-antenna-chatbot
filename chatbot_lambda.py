@@ -142,19 +142,43 @@ def extract_state_name(msg):
 
 
 def is_blank_ret_query(msg):
-    """Detect queries asking for blank/missing RET data."""
+    """
+    Detect queries that want to DOWNLOAD blank RET data.
+    Must contain both:
+      1. A blank/missing RET pattern
+      2. A download-intent word (show, get, download, give, list, export, fetch, find)
+    This prevents "explain why blank RET..." from triggering a download.
+    """
     lower = msg.lower()
-    patterns = [
-        r"blank.{0,10}ret",
-        r"missing.{0,10}ret",
-        r"empty.{0,10}ret",
+
+    # Reject if query is asking for explanation, not data
+    explain_intent = bool(re.search(
+        r"\b(why|reason|explain|cause|what is|what are|how|tell me about|describe)\b",
+        lower
+    ))
+    if explain_intent:
+        return False
+
+    # Must have download intent
+    download_intent = bool(re.search(
+        r"\b(show|get|download|give|list|export|fetch|find|extract|pull|share|provide)\b"
+        r"|blank ret data|missing ret data|empty ret data",
+        lower
+    ))
+    if not download_intent:
+        return False
+
+    # Must also have a blank/missing RET pattern
+    ret_patterns = [
+        r"blank.{0,15}ret",
+        r"missing.{0,15}ret",
+        r"empty.{0,15}ret",
+        r"ret.{0,15}blank",
+        r"ret.{0,15}missing",
+        r"ret.{0,15}not.{0,15}filled",
         r"no.{0,10}ret.{0,10}data",
-        r"ret.{0,10}not.{0,10}filled",
-        r"ret.{0,10}missing",
-        r"ret.{0,10}blank",
-        r"antenna classification.{0,20}blank",
     ]
-    return any(re.search(p, lower) for p in patterns)
+    return any(re.search(p, lower) for p in ret_patterns)
 
 
 def is_blank(val):
