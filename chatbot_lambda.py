@@ -242,16 +242,26 @@ def get_blank_ret_records(state_name):
     Returns ALL columns + State column.
     Resolves state_name against actual S3 filenames first.
     """
-    # Resolve to actual S3 filename
-    actual_names = _discover_s3_states()
+    # Resolve state_name to actual S3 filename using code_map
+    # state_name here comes from extract_state_name() which returns S3-style names
+    # so it should already match — but verify against code_map values
+    code_map = _load_code_map()
+    all_state_files = []
+    for v in code_map.values():
+        if isinstance(v, list):
+            all_state_files.extend(v)
+        else:
+            all_state_files.append(v)
+    all_state_files = list(set(all_state_files))
+
     resolved = state_name
-    if state_name not in actual_names:
-        state_lower = state_name.lower()
-        for name in actual_names:
-            if state_lower.replace("_"," ") in name.lower().replace("_"," "):
+    if state_name not in all_state_files:
+        # Try case-insensitive match
+        for name in all_state_files:
+            if name.upper() == state_name.upper():
                 resolved = name
-                print(f"Resolved state {state_name} -> {resolved}")
                 break
+    print(f"Blank RET: resolving '{state_name}' -> '{resolved}'")
     sap_map = _load_state_sap(resolved)
     results = []
     total   = 0
@@ -303,35 +313,40 @@ def _load_code_map():
     return _code_map_cache
 
 
-def _resolve_state(state_code):
+def _resolve_states(state_code):
     """
-    Resolve SAP ID state code to actual S3 pkl filename.
-    Priority:
-      1. code_map.json  (built at index time from real data)
-      2. STATE_CODE_MAP (hardcoded fallback)
-    No scanning of all state files.
+    Returns LIST of actual S3 pkl filenames for a given SAP state code.
+    code_map.json stores code -> [state1, state2, ...] to handle
+    cases like JK -> [JAMMU, KASHMIR] (two separate state files).
+    Falls back to STATE_CODE_MAP if code_map.json not yet built.
     """
     code_map = _load_code_map()
     if state_code in code_map:
-        return code_map[state_code]
-    return STATE_CODE_MAP.get(state_code, "")
+        val = code_map[state_code]
+        # Support both old single-string and new list format
+        return val if isinstance(val, list) else [val]
+    fallback = STATE_CODE_MAP.get(state_code, "")
+    return [fallback] if fallback else []
 
 
 def lookup_sap(sap_id):
     parts      = sap_id.upper().split("-")
     state_code = parts[1] if len(parts) > 1 else ""
-    state_name = _resolve_state(state_code)
+    state_list = _resolve_states(state_code)
 
-    if state_name:
+    print(f"SAP {sap_id}: code={state_code} -> states={state_list}")
+
+    for state_name in state_list:
+        if not state_name:
+            continue
         sap_map = _load_state_sap(state_name)
         records = sap_map.get(sap_id.upper(), [])
         if records:
             print(f"SAP {sap_id} found in {state_name}: {len(records)} records")
             return records
-        print(f"SAP {sap_id} not found in {state_name} (code_map said {state_code}->{state_name})")
-    else:
-        print(f"SAP {sap_id}: unknown state code '{state_code}'")
+        print(f"SAP {sap_id} not in {state_name}, trying next...")
 
+    print(f"SAP {sap_id} not found in any of {state_list}")
     return []
 
 
