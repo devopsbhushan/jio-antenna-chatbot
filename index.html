@@ -147,13 +147,7 @@
   <div class="welcome">
     <p class="welcome-text">👋 Hello! Ask me anything about Jio antenna inventory.<br>
     Type a <strong>SAP ID</strong> for instant full record lookup, or ask a general question.</p>
-    <div class="chips">
-      <span class="chip" onclick="qa(this)">Show I-UW-JSWT-ENB-9004</span>
-      <span class="chip" onclick="qa(this)">Show I-JK-SGAR-ENB-0336</span>
-      <span class="chip" onclick="qa(this)">Sites with alarms in Maharashtra</span>
-      <span class="chip" onclick="qa(this)">Show VSWR alarm sites</span>
-      <span class="chip" onclick="qa(this)">Sites with missing RET data</span>
-    </div>
+
   </div>
 </div>
 
@@ -165,7 +159,7 @@
 </div>
 
 <script>
-  const API  = 'https://x6saqrpdkcr7i4lrnvhwufjnpe0smkqv.lambda-url.ap-south-1.on.aws/';
+  const API  = 'https://4xtlidvjz53glsr3upsudddvmy0grxdu.lambda-url.ap-south-1.on.aws/';
   const COLS = [
     "State","SAP ID","Sector Id","Bands",
     "RRH Connect Board ID","RRH Connect Port ID",
@@ -360,12 +354,7 @@
     hist = []; lastMsg = '';
     document.getElementById('chat').innerHTML = '<div class="welcome">'
       + '<p class="welcome-text">Chat cleared. Ask a new question!</p>'
-      + '<div class="chips">'
-      + '<span class="chip" onclick="qa(this)">Show I-UW-JSWT-ENB-9004</span>'
-      + '<span class="chip" onclick="qa(this)">Show I-JK-SGAR-ENB-0336</span>'
-      + '<span class="chip" onclick="qa(this)">Blank RET data for Maharashtra</span>'
-      + '<span class="chip" onclick="qa(this)">Sites with alarms in Maharashtra</span>'
-      + '</div></div>';
+      + '</div>';
   }
 </script></script>
 </body>
