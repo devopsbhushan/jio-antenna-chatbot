@@ -4,11 +4,9 @@ import urllib.request, urllib.error
 from datetime import datetime, timedelta
 
 # ── LangChain imports (zero cost — open source, uses Groq free tier) ──
+# Pinned: groq==0.7.0 + langchain-groq==0.1.3 + langchain==0.1.20
 from langchain_groq import ChatGroq
-from langchain.schema import SystemMessage, HumanMessage, AIMessage
-from langchain.memory import ConversationBufferWindowMemory
-from langchain.prompts import ChatPromptTemplate, MessagesPlaceholder
-from langchain.schema.runnable import RunnablePassthrough
+from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
 
 BUCKET     = os.environ["BUCKET"]
 GROQ_KEY   = os.environ["GROQ_API_KEY"]
