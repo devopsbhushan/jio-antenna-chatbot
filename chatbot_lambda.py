@@ -53,17 +53,18 @@ DISPLAY_COLUMNS = [
 ]
 
 STATE_CODE_MAP = {
-    "MH": "MAHARASHTRA", "DL": "DELHI", "KA": "KARNATAKA",
-    "TN": "TAMIL_NADU",  "GJ": "GUJARAT", "RJ": "RAJASTHAN",
-    "UP": "UTTAR_PRADESH_EAST", "UW": "UTTAR_PRADESH_WEST",
-    "WB": "WEST_BENGAL", "AP": "ANDHRA_PRADESH", "TS": "TELANGANA",
-    "MP": "MADHYA_PRADESH", "PB": "PUNJAB", "HR": "HARYANA",
-    "KL": "KERALA", "OR": "ODISHA", "BR": "BIHAR",
-    "JH": "JHARKHAND", "AS": "ASSAM", "JK": "JAMMU_KASHMIR",
-    "HP": "HIMACHAL_PRADESH", "UK": "UTTARAKHAND", "CH": "CHATTISGARH",
-    "NE": "NORTH_EAST", "MN": "MANIPUR", "TR": "TRIPURA",
-    "ML": "MEGHALAYA", "SK": "SIKKIM", "GA": "GOA",
-    "HM": "HIMACHAL_PRADESH", "NK": "KARNATAKA"
+    "MH": "MAHARASHTRA",        "DL": "DELHI",              "KA": "KARNATAKA",
+    "TN": "TAMIL_NADU",         "GJ": "GUJARAT",            "RJ": "RAJASTHAN",
+    "UP": "UTTAR_PRADESH_EAST", "UW": "UTTAR_PRADESH_WEST", "WB": "WEST_BENGAL",
+    "AP": "ANDHRA_PRADESH",     "TS": "TELANGANA",          "MP": "MADHYA_PRADESH",
+    "PB": "PUNJAB",             "HR": "HARYANA",            "KL": "KERALA",
+    "OR": "ODISHA",             "BR": "BIHAR",              "JH": "JHARKHAND",
+    "AS": "ASSAM",              "JK": "JAMMU_KASHMIR",      "HP": "HIMACHAL_PRADESH",
+    "UK": "UTTARAKHAND",        "CH": "CHATTISGARH",        "NE": "NORTH_EAST",
+    "MN": "MANIPUR",            "TR": "TRIPURA",            "ML": "MEGHALAYA",
+    "SK": "SIKKIM",             "GA": "GOA",
+    "MU": "MUMBAI",             "KO": "KOLKATA",            "HY": "HYDERABAD",
+    "BL": "BANGALORE",          "PU": "PUNE",               "NK": "KARNATAKA"
 }
 
 STATE_NAME_LIST = [
@@ -71,7 +72,8 @@ STATE_NAME_LIST = [
     "UTTAR_PRADESH_EAST","UTTAR_PRADESH_WEST","WEST_BENGAL","ANDHRA_PRADESH",
     "TELANGANA","MADHYA_PRADESH","PUNJAB","HARYANA","KERALA","ODISHA","BIHAR",
     "JHARKHAND","ASSAM","JAMMU_KASHMIR","HIMACHAL_PRADESH","UTTARAKHAND",
-    "CHATTISGARH","NORTH_EAST","MANIPUR","TRIPURA","MEGHALAYA","SIKKIM","GOA"
+    "CHATTISGARH","NORTH_EAST","MANIPUR","TRIPURA","MEGHALAYA","SIKKIM","GOA",
+    "MUMBAI","KOLKATA","CHENNAI","HYDERABAD"
 ]
 
 STATE_ALIASES = {
@@ -467,10 +469,19 @@ def lambda_handler(event, context):
         elif sap_id:
             docs = filter_and_sort(lookup_sap(sap_id))
             if not docs:
+                # Check if state code is simply unknown — give helpful message
+                parts      = sap_id.upper().split("-")
+                state_code = parts[1] if len(parts) > 1 else ""
+                state_list = _resolve_states(state_code)
+                if not state_list:
+                    msg_out = (f"SAP ID {sap_id} contains unknown state code '{state_code}'. "
+                               f"This state may not be in the current index. "
+                               f"Please rebuild the index if this is a new state.")
+                else:
+                    msg_out = f"No records found for SAP ID {sap_id}."
                 return {"statusCode": 200, "body": json.dumps({
-                    "summary": f"No records found for SAP ID {sap_id}.",
-                    "records": [], "columns": COLUMNS, "retrieved": 0,
-                    "history": history, "download": False
+                    "summary": msg_out, "records": [], "columns": COLUMNS,
+                    "retrieved": 0, "history": history, "download": False
                 })}
             return {"statusCode": 200, "body": json.dumps({
                 "summary": "", "records": docs, "columns": COLUMNS,
