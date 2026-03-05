@@ -432,12 +432,27 @@ def is_general_question(msg):
     Examples: "why is RET blank", "what is RET", "explain antenna classification"
     """
     lower = msg.lower()
+
+    # First: if query contains a SAP ID or state+data keyword, treat as data query
+    if re.search(r"I-[A-Z]{2}-[A-Z0-9]+-ENB-[0-9A-Z]+", msg.upper()):
+        return False
+    data_keywords = ["show data", "show records", "get data", "fetch data",
+                     "list sites", "find sites", "alarm data", "sites in"]
+    if any(kw in lower for kw in data_keywords):
+        return False
+
     general_patterns = [
-        r"\bwhy\b", r"\bwhat is\b", r"\bwhat are\b",
-        r"\bexplain\b", r"\bhow does\b", r"\bhow do\b",
+        r"\bwhy\b",
+        r"\bhow\b",                         # catches: how this, how can, how to
+        r"\bwhat is\b", r"\bwhat are\b", r"\bwhat can\b", r"\bwhat should\b",
+        r"\bexplain\b",
         r"\bwhat does\b", r"\btell me about\b", r"\bdescribe\b",
         r"\bmeaning of\b", r"\bdefinition\b", r"\bpurpose of\b",
         r"\breason\b", r"\bcause\b",
+        r"\baction\b", r"\bactions\b",       # "necessary actions"
+        r"\bsteps\b", r"\bprocedure\b",      # "steps to fix"
+        r"\bcan appear\b", r"\bcan happen\b",# "how this can appear"
+        r"\bshould be\b", r"\bneeded\b",
     ]
     return any(re.search(p, lower) for p in general_patterns)
 
