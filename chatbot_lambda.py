@@ -391,11 +391,8 @@ def ask_langchain(question, docs, history):
         "Answer ONLY using the database records provided below. "
         "Do NOT invent, assume, or add any information not present in the data. "
         "If the data does not contain enough information to answer, say so clearly. "
-        "Be concise: 2-4 lines max. No bullet points.
-
-"
-        f"Database records:
-{context}"
+        "Be concise: 2-4 lines max. No bullet points.\n\n"
+        "Database records:\n" + context
     )
 
     llm = _get_llm()
