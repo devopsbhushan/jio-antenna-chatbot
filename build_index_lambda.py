@@ -1,21 +1,21 @@
 import boto3, json, faiss, numpy as np, pickle
-import gc, re, math, hashlib, io, random
-from collections import Counter
+import os, re, hashlib, ssl, io, csv
+import urllib.request, urllib.error
+from datetime import datetime, timedelta
 
-BUCKET      = "chatbot-input-database"
-BASE_PREFIX = "processed/"
-INDEX_KEY   = "rag-index/faiss.index"
-IDF_KEY     = "rag-model/idf.pkl"
-META_KEY    = "rag-index/metadata.pkl"
-SAP_PREFIX     = "rag-index/sap/"   # sap/MAHARASHTRA.pkl, sap/DELHI.pkl ...
+BUCKET     = os.environ["BUCKET"]
+GROQ_KEY   = os.environ["GROQ_API_KEY"]
+GROQ_URL   = "https://api.groq.com/openai/v1/chat/completions"
+SAP_PREFIX    = "rag-index/sap/"
+BLANK_RET_KEY = "rag-exports/Blank_RET_All_States.csv"
+DIM        = 384
 
-MAX_ROWS = 200000
-DIM      = 384
-IDF_TOP  = 30000
-CAP_A    = 150000
-CAP_B    =  50000
+s3 = boto3.client("s3")
+_index     = None
+_idf       = None
+_meta      = None
+_sap_cache = {}
 
-# All 30 columns stored in SAP map for full Excel export
 COLUMNS = [
     "State","JioCenter","Cluster ID","SAP ID","ENB ID","Sector Id","Cell ID","Bands",
     "RRH Connect Board ID","RRH Connect Port ID",
@@ -27,191 +27,510 @@ COLUMNS = [
     "Alarm Status","Alarm details","RRH Last Updated Time","RET Source"
 ]
 
-# Short columns for FAISS metadata only (saves RAM)
-FAISS_COLUMNS = [
+# Short columns for normal display
+DISPLAY_COLUMNS = [
     "State","SAP ID","Sector Id","Bands",
     "RRH Connect Board ID","RRH Connect Port ID",
     "SF Antenna Model","LSMR Antenna Type",
     "Antenna Classification","RRH Last Updated Time","Alarm details"
 ]
 
-s3 = boto3.client("s3")
+STATE_CODE_MAP = {
+    "MH": "MAHARASHTRA", "DL": "DELHI", "KA": "KARNATAKA",
+    "TN": "TAMIL_NADU",  "GJ": "GUJARAT", "RJ": "RAJASTHAN",
+    "UP": "UTTAR_PRADESH_EAST", "UW": "UTTAR_PRADESH_WEST",
+    "WB": "WEST_BENGAL", "AP": "ANDHRA_PRADESH", "TS": "TELANGANA",
+    "MP": "MADHYA_PRADESH", "PB": "PUNJAB", "HR": "HARYANA",
+    "KL": "KERALA", "OR": "ODISHA", "BR": "BIHAR",
+    "JH": "JHARKHAND", "AS": "ASSAM", "JK": "JAMMU_KASHMIR",
+    "HP": "HIMACHAL_PRADESH", "UK": "UTTARAKHAND", "CH": "CHATTISGARH",
+    "NE": "NORTH_EAST", "MN": "MANIPUR", "TR": "TRIPURA",
+    "ML": "MEGHALAYA", "SK": "SIKKIM", "GA": "GOA",
+    "HM": "HIMACHAL_PRADESH", "NK": "KARNATAKA"
+}
 
-def load_json(key):
-    return json.loads(s3.get_object(Bucket=BUCKET, Key=key)["Body"].read())
+# Reverse map: full state name -> state name as stored in S3
+# Also allow partial matching e.g. "maharashtra" -> "MAHARASHTRA"
+STATE_NAME_LIST = [
+    "MAHARASHTRA","DELHI","KARNATAKA","TAMIL_NADU","GUJARAT","RAJASTHAN",
+    "UTTAR_PRADESH_EAST","UTTAR_PRADESH_WEST","WEST_BENGAL","ANDHRA_PRADESH",
+    "TELANGANA","MADHYA_PRADESH","PUNJAB","HARYANA","KERALA","ODISHA","BIHAR",
+    "JHARKHAND","ASSAM","JAMMU_KASHMIR","HIMACHAL_PRADESH","UTTARAKHAND",
+    "CHATTISGARH","NORTH_EAST","MANIPUR","TRIPURA","MEGHALAYA","SIKKIM","GOA"
+]
 
-def row_to_text(row):
-    return (
-        f"SAP ID {row.get('SAP ID','')} in {row.get('State','')}. "
-        f"Sector {row.get('Sector Id','')} band {row.get('Bands','')}. "
-        f"Antenna: {row.get('LSMR Antenna Type','')}. "
-        f"Alarm: {row.get('Alarm details','None')}."
-    )
+# Common aliases
+STATE_ALIASES = {
+    "UP EAST": "UTTAR_PRADESH_EAST", "UP WEST": "UTTAR_PRADESH_WEST",
+    "J&K": "JAMMU_KASHMIR", "JK": "JAMMU_KASHMIR",
+    "TN": "TAMIL_NADU", "AP": "ANDHRA_PRADESH", "WB": "WEST_BENGAL",
+    "MP": "MADHYA_PRADESH", "HP": "HIMACHAL_PRADESH", "UK": "UTTARAKHAND",
+    "MH": "MAHARASHTRA", "DL": "DELHI", "KA": "KARNATAKA",
+    "GJ": "GUJARAT", "RJ": "RAJASTHAN", "PB": "PUNJAB",
+    "HR": "HARYANA", "KL": "KERALA", "OR": "ODISHA", "BR": "BIHAR",
+    "JH": "JHARKHAND", "AS": "ASSAM", "CH": "CHATTISGARH",
+    "GA": "GOA", "TS": "TELANGANA"
+}
 
-def has_alarm(row):
-    v = str(row.get("Alarm details","")).strip().lower()
-    return v not in ("","none","null","nan","-")
 
-def tokenize(text):
-    return [w for w in re.sub(r"[^a-z0-9\s]"," ",text.lower()).split() if len(w)>1]
+def _load_base():
+    global _index, _idf, _meta
+    if _index is None:
+        s3.download_file(BUCKET, "rag-index/faiss.index", "/tmp/faiss.index")
+        _index = faiss.read_index("/tmp/faiss.index")
+        if hasattr(_index, "nprobe"):
+            _index.nprobe = 20
+    if _idf is None:
+        obj  = s3.get_object(Bucket=BUCKET, Key="rag-model/idf.pkl")
+        _idf = pickle.loads(obj["Body"].read())
+    if _meta is None:
+        obj   = s3.get_object(Bucket=BUCKET, Key="rag-index/metadata.pkl")
+        _meta = pickle.loads(obj["Body"].read())
 
-def hash_tok(t):
-    return int(hashlib.md5(t.encode()).hexdigest(),16) % DIM
 
-def text_to_vec(text, idf):
+def _load_state_sap(state_name):
+    if state_name in _sap_cache:
+        return _sap_cache[state_name]
+    try:
+        obj = s3.get_object(Bucket=BUCKET, Key=f"{SAP_PREFIX}{state_name}.pkl")
+        sap = pickle.loads(obj["Body"].read())
+        _sap_cache[state_name] = sap
+        print(f"Loaded SAP map {state_name}: {len(sap)} SAP IDs")
+        return sap
+    except Exception as e:
+        print(f"Could not load SAP map {state_name}: {e}")
+        return {}
+
+
+def tokenize(t):
+    t = re.sub(r"[^a-z0-9\s]", " ", t.lower())
+    return [w for w in t.split() if len(w) > 1]
+
+
+def encode(text):
+    _load_base()
     vec = np.zeros(DIM, dtype=np.float32)
     for t in tokenize(text):
-        vec[hash_tok(t)] += idf.get(t, 1.0)
+        idx = int(hashlib.md5(t.encode()).hexdigest(), 16) % DIM
+        vec[idx] += _idf.get(t, 1.0)
     n = np.linalg.norm(vec)
-    if n > 1e-9: vec /= n
-    return vec
+    if n > 1e-9:
+        vec /= n
+    return vec.reshape(1, -1)
+
+
+def extract_sap_id(msg):
+    m = re.search(r"I-[A-Z]{2}-[A-Z0-9]+-ENB-[0-9A-Z]+", msg.upper())
+    return m.group(0) if m else None
+
+
+def extract_state_name(msg):
+    """Extract state name from message, return S3 key name or None."""
+    upper = msg.upper()
+
+    # Check aliases first (short codes)
+    for alias, state in STATE_ALIASES.items():
+        if re.search(r"\b" + re.escape(alias) + r"\b", upper):
+            return state
+
+    # Check full state names (with underscore or space)
+    for state in STATE_NAME_LIST:
+        readable = state.replace("_", " ")
+        if readable in upper or state in upper:
+            return state
+
+    return None
+
+
+def is_blank_ret_query(msg):
+    """
+    Detect queries that want to DOWNLOAD blank RET data.
+    Must contain both:
+      1. A blank/missing RET pattern
+      2. A download-intent word (show, get, download, give, list, export, fetch, find)
+    This prevents "explain why blank RET..." from triggering a download.
+    """
+    lower = msg.lower()
+
+    # Reject if query is asking for explanation, not data
+    explain_intent = bool(re.search(
+        r"\b(why|reason|explain|cause|what is|what are|how|tell me about|describe)\b",
+        lower
+    ))
+    if explain_intent:
+        return False
+
+    # Must have download intent
+    download_intent = bool(re.search(
+        r"\b(show|get|download|give|list|export|fetch|find|extract|pull|share|provide)\b"
+        r"|blank ret data|missing ret data|empty ret data",
+        lower
+    ))
+    if not download_intent:
+        return False
+
+    # Must also have a blank/missing RET pattern
+    ret_patterns = [
+        r"blank.{0,15}ret",
+        r"missing.{0,15}ret",
+        r"empty.{0,15}ret",
+        r"ret.{0,15}blank",
+        r"ret.{0,15}missing",
+        r"ret.{0,15}not.{0,15}filled",
+        r"no.{0,10}ret.{0,10}data",
+    ]
+    return any(re.search(p, lower) for p in ret_patterns)
+
+
+def is_blank(val):
+    return not val or val.strip() in ("", "-", "N/A", "null", "None", "nan", "0")
+
+
+def parse_date(val):
+    """Parse ISO datetime string, return datetime or None."""
+    if not val:
+        return None
+    for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ",
+                "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+        try:
+            return datetime.strptime(str(val).strip(), fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def filter_and_sort(results):
+    """
+    1. Keep only records within 15 days of the most recent RRH Last Updated Time.
+    2. Sort by SAP ID, then Sector Id numerically.
+    """
+    if not results:
+        return results
+
+    # Parse all dates
+    all_dates = [
+        parse_date(r.get("RRH Last Updated Time", ""))
+        for r in results
+        if parse_date(r.get("RRH Last Updated Time", ""))
+    ]
+
+    if all_dates:
+        latest_date = max(all_dates)
+        cutoff_date = latest_date - timedelta(days=15)
+        results = [
+            r for r in results
+            if parse_date(r.get("RRH Last Updated Time", "")) and
+               parse_date(r.get("RRH Last Updated Time", "")) >= cutoff_date
+        ]
+
+    # Sort by SAP ID, then Sector Id numerically
+    results.sort(key=lambda x: (
+        x.get("SAP ID", ""),
+        int(x.get("Sector Id", 0)) if str(x.get("Sector Id", "")).isdigit() else 999
+    ))
+
+    return results
+
+
+def get_blank_ret_records(state_name):
+    """
+    Filter:
+    Antenna Classification = 'RET'
+    AND RET Connect Board ID = '-'
+    AND RET Connect Port ID  = '-'
+    Returns ALL columns + State column.
+    Resolves state_name against actual S3 filenames first.
+    """
+    # Resolve to actual S3 filename
+    actual_names = _discover_s3_states()
+    resolved = state_name
+    if state_name not in actual_names:
+        state_lower = state_name.lower()
+        for name in actual_names:
+            if state_lower.replace("_"," ") in name.lower().replace("_"," "):
+                resolved = name
+                print(f"Resolved state {state_name} -> {resolved}")
+                break
+    sap_map = _load_state_sap(resolved)
+    results = []
+    total   = 0
+    sample_classes = set()
+
+    for sap_id, records in sap_map.items():
+        for r in records:
+            total += 1
+            ret_board = r.get("RET Connect Board ID", "").strip()
+            ret_port  = r.get("RET Connect Port ID",  "").strip()
+            ant_class = r.get("Antenna Classification","").strip()
+
+            # Always collect sample values for CloudWatch debug
+            sample_classes.add(repr(ant_class))
+
+            if ret_board == "-" and ret_port == "-" and ant_class.upper() == "RET":
+                row = dict(r)               # ALL original columns
+                row["State"] = state_name   # ensure State is set
+                results.append(row)
+
+    print(f"{state_name}: {total} records checked, {len(results)} matched")
+    # Print ALL unique Antenna Classification values seen
+    print(f"ALL Antenna Classification values in {state_name}: {sorted(sample_classes)}")
+    # Also print board/port blank stats
+    blank_board = sum(1 for sap_id, recs in sap_map.items()
+                      for r in recs if is_blank(r.get("RRH Connect Board ID","").strip()))
+    blank_port  = sum(1 for sap_id, recs in sap_map.items()
+                      for r in recs if is_blank(r.get("RRH Connect Port ID","").strip()))
+    print(f"Records with blank Board ID: {blank_board}, blank Port ID: {blank_port}")
+    return results
+
+
+# Cache: SAP code (e.g. "JK") -> actual S3 state filename (e.g. "J_K")
+# Loaded once from rag-index/sap/code_map.json built during index build
+_code_map_cache = {}
+
+def _load_code_map():
+    """Load SAP-code-to-S3-filename map saved during index build."""
+    global _code_map_cache
+    if _code_map_cache:
+        return _code_map_cache
+    try:
+        obj = s3.get_object(Bucket=BUCKET, Key=f"{SAP_PREFIX}code_map.json")
+        _code_map_cache = json.loads(obj["Body"].read())
+        print(f"Loaded code_map: {_code_map_cache}")
+    except Exception as e:
+        print(f"code_map.json not found, will use STATE_CODE_MAP fallback: {e}")
+        _code_map_cache = {}
+    return _code_map_cache
+
+
+def _resolve_state(state_code):
+    """
+    Resolve SAP ID state code to actual S3 pkl filename.
+    Priority:
+      1. code_map.json  (built at index time from real data)
+      2. STATE_CODE_MAP (hardcoded fallback)
+    No scanning of all state files.
+    """
+    code_map = _load_code_map()
+    if state_code in code_map:
+        return code_map[state_code]
+    return STATE_CODE_MAP.get(state_code, "")
+
+
+def lookup_sap(sap_id):
+    parts      = sap_id.upper().split("-")
+    state_code = parts[1] if len(parts) > 1 else ""
+    state_name = _resolve_state(state_code)
+
+    if state_name:
+        sap_map = _load_state_sap(state_name)
+        records = sap_map.get(sap_id.upper(), [])
+        if records:
+            print(f"SAP {sap_id} found in {state_name}: {len(records)} records")
+            return records
+        print(f"SAP {sap_id} not found in {state_name} (code_map said {state_code}->{state_name})")
+    else:
+        print(f"SAP {sap_id}: unknown state code '{state_code}'")
+
+    return []
+
+
+def retrieve_semantic(query, top_k=20, score_threshold=1.5):
+    """
+    Returns records whose L2 distance is below threshold.
+    Lower L2 = more similar. Typical range 0.0 (exact) to 2.0 (unrelated).
+    threshold=1.5 filters out clearly unrelated results.
+    """
+    _load_base()
+    D, I = _index.search(encode(query), top_k)
+    results = []
+    for dist, idx in zip(D[0], I[0]):
+        if idx == -1 or idx >= len(_meta):
+            continue
+        if dist <= score_threshold:
+            results.append(_meta[idx])
+    print(f"Semantic search: {len(results)}/{top_k} results within threshold {score_threshold} (distances: {D[0][:5].tolist()})")
+    return results
+
+
+def ask_groq(question, docs, history):
+    if not docs:
+        return "No matching records found in the database for this query."
+
+    ctx = "\n".join([
+        f"State:{r.get('State','N/A')} | SAP:{r.get('SAP ID','N/A')} | "
+        f"Sector:{r.get('Sector Id','N/A')} | Band:{r.get('Bands','N/A')} | "
+        f"LSMR:{r.get('LSMR Antenna Type','N/A')} | Alarm:{r.get('Alarm details','N/A')}"
+        for r in docs[:20] if r
+    ])
+
+    system = (
+        "You are a Jio antenna inventory assistant. "
+        "Answer ONLY using the data provided below. "
+        "Do NOT invent, assume, or add any information not present in the data. "
+        "If the data does not contain enough information to answer, say so clearly. "
+        "Be concise: 2-4 lines max. No bullet points."
+    )
+
+    payload = json.dumps({
+        "model": "llama-3.1-8b-instant",
+        "messages": [
+            {"role": "system", "content": system}
+        ] + history + [
+            {"role": "user", "content": f"Question: {question}\n\nDatabase records:\n{ctx}"}
+        ],
+        "max_tokens": 300, "temperature": 0.0
+    }).encode("utf-8")
+    ctx_ssl = ssl.create_default_context()
+    try:
+        req = urllib.request.Request(GROQ_URL, data=payload,
+            headers={"Authorization": f"Bearer {GROQ_KEY}",
+                     "Content-Type": "application/json",
+                     "User-Agent": "python-urllib/3.11"}, method="POST")
+        with urllib.request.urlopen(req, timeout=30, context=ctx_ssl) as r:
+            return json.loads(r.read())["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"Summary unavailable: {e}"
+
 
 def lambda_handler(event, context):
-    def mins_left():
-        return context.get_remaining_time_in_millis() / 60000
+    method = event.get("requestContext", {}).get("http", {}).get("method", "")
+    if method == "OPTIONS":
+        return {"statusCode": 200, "body": ""}
 
-    idx_meta  = load_json(f"{BASE_PREFIX}index.json")
-    bucket_a  = []
-    bucket_b  = []
-    count_a   = count_b = 0
-    doc_freq  = Counter()
-    total     = 0
-    states_saved = 0
+    try:
+        body = json.loads(event.get("body") or "{}")
+    except Exception:
+        body = {}
 
-    print("Processing state by state...")
+    msg     = body.get("message", "").strip()
+    history = body.get("history", [])[-6:]
 
-    # Maps SAP ID state code (e.g. "JK") -> actual S3 folder name (e.g. "JAMMU_KASHMIR")
-    code_map = {}
+    if msg == "ping":
+        _load_base()
+        return {"statusCode": 200, "body": json.dumps({"reply": "warm"})}
+    if not msg:
+        return {"statusCode": 400, "body": json.dumps({"error": "No message"})}
 
-    for state, meta in idx_meta["states"].items():
-        # Build SAP map for this state only
-        state_sap = {}
+    try:
+        sap_id     = extract_sap_id(msg)
+        state_name = extract_state_name(msg)
+        blank_ret  = is_blank_ret_query(msg)
 
-        for i in range(1, meta["chunks"]+1):
-            rows = load_json(f"{BASE_PREFIX}{state}/chunk_{i:04d}.json")
-            for row in rows:
-                total += 1
-                row["State"] = state
-                text = row_to_text(row)
-                doc_freq.update(set(tokenize(text)))
+        # ── Blank RET download ──
+        if blank_ret:
+            # Detect "all states" request
+            all_states_requested = bool(re.search(
+                r"all.{0,10}state|every.{0,10}state|pan.{0,5}india|all.{0,10}circle",
+                msg, re.IGNORECASE
+            ))
 
-                # SAP map for this state
-                sap_id = row.get("SAP ID","").strip()
-                if sap_id:
-                    if sap_id not in state_sap:
-                        state_sap[sap_id] = []
-                    state_sap[sap_id].append({c: row.get(c,"") for c in COLUMNS})
+            if all_states_requested:
+                # Pre-built at index time — just return presigned URL instantly
+                try:
+                    url = s3.generate_presigned_url(
+                        "get_object",
+                        Params={"Bucket": BUCKET, "Key": BLANK_RET_KEY},
+                        ExpiresIn=3600
+                    )
+                    return {"statusCode": 200, "body": json.dumps({
+                        "summary":       "Blank RET data for all states is ready. Click below to download.",
+                        "records":       [],
+                        "columns":       COLUMNS,
+                        "retrieved":     0,
+                        "history":       history,
+                        "download":      False,
+                        "presigned_url": url,
+                        "filename":      "Blank_RET_All_States.csv"
+                    })}
+                except Exception as e:
+                    return {"statusCode": 500, "body": json.dumps({"error": f"Could not generate download link: {e}"})}
 
-                # FAISS reservoir sample
-                entry = {c: row.get(c,"") for c in FAISS_COLUMNS}
-                entry["_text"] = text
-                if has_alarm(row):
-                    count_a += 1
-                    if len(bucket_a) < CAP_A:
-                        bucket_a.append(entry)
-                    else:
-                        r = random.randint(0, count_a-1)
-                        if r < CAP_A: bucket_a[r] = entry
-                else:
-                    count_b += 1
-                    if len(bucket_b) < CAP_B:
-                        bucket_b.append(entry)
-                    else:
-                        r = random.randint(0, count_b-1)
-                        if r < CAP_B: bucket_b[r] = entry
+            elif state_name:
+                docs     = get_blank_ret_records(state_name)
+                label    = state_name
+                filename = f"Blank_RET_{state_name}.xlsx"
+            else:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary":   "Please specify a state name or 'all states'. E.g. 'blank RET data for Maharashtra'",
+                    "records":   [], "columns": COLUMNS,
+                    "retrieved": 0,  "history": history,
+                    "download":  False
+                })}
 
-        # Save this state SAP map to S3 immediately — free RAM
-        buf = io.BytesIO()
-        pickle.dump(state_sap, buf)
-        s3.put_object(
-            Bucket=BUCKET,
-            Key=f"{SAP_PREFIX}{state}.pkl",
-            Body=buf.getvalue()
-        )
-        states_saved += 1
-        print(f"  Saved {state}: {len(state_sap)} SAP IDs | "
-              f"total rows: {total:,} | time left: {mins_left():.1f} min")
+            if not docs:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary":   f"No blank RET records found for {label}.",
+                    "records":   [], "columns": COLUMNS,
+                    "retrieved": 0,  "history": history,
+                    "download":  False
+                })}
 
-        # Extract SAP code from first SAP ID → e.g. "I-JK-SGAR-ENB-0336" → "JK"
-        for sap_id in state_sap:
-            parts = sap_id.upper().split("-")
-            if len(parts) > 1:
-                sap_code = parts[1]
-                if sap_code not in code_map:
-                    code_map[sap_code] = state
-                    print(f"    code_map: {sap_code} -> {state}")
-                break
-        del state_sap, buf
-        gc.collect()
+            # Write CSV to S3 (avoids 6MB Lambda response limit)
+            csv_key = f"exports/Blank_RET_{label}.csv"
+            buf = io.StringIO()
+            writer = csv.DictWriter(buf, fieldnames=COLUMNS, extrasaction="ignore")
+            writer.writeheader()
+            for row in docs:
+                writer.writerow({c: row.get(c, "") for c in COLUMNS})
+            s3.put_object(
+                Bucket=BUCKET,
+                Key=csv_key,
+                Body=buf.getvalue().encode("utf-8"),
+                ContentType="text/csv"
+            )
+            presigned_url = s3.generate_presigned_url(
+                "get_object",
+                Params={"Bucket": BUCKET, "Key": csv_key},
+                ExpiresIn=3600
+            )
+            print(f"CSV saved: {csv_key}, {len(docs)} rows, URL generated")
+            return {"statusCode": 200, "body": json.dumps({
+                "summary":       f"Found {len(docs):,} blank RET records for {label}. Click the link to download.",
+                "records":       [],
+                "columns":       COLUMNS,
+                "retrieved":     len(docs),
+                "history":       history,
+                "download":      False,
+                "presigned_url": presigned_url,
+                "filename":      f"Blank_RET_{label}.csv"
+            })}
 
-    print(f"Pass 1 done: {total:,} rows, {states_saved} states saved")
+        # ── SAP ID lookup ──
+        elif sap_id:
+            docs = filter_and_sort(lookup_sap(sap_id))
+            if not docs:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary": f"No records found for SAP ID {sap_id}.",
+                    "records": [], "columns": COLUMNS,
+                    "retrieved": 0, "history": history, "download": False
+                })}
+            return {"statusCode": 200, "body": json.dumps({
+                "summary":   "", "records": docs, "columns": COLUMNS,
+                "retrieved": len(docs), "history": history, "download": False
+            })}
 
-    # Save SAP code -> state filename map for instant chatbot lookup
-    s3.put_object(
-        Bucket=BUCKET,
-        Key=f"{SAP_PREFIX}code_map.json",
-        Body=json.dumps(code_map).encode("utf-8")
-    )
-    print(f"code_map.json saved with {len(code_map)} state codes: {code_map}")
+        # ── Semantic search ──
+        else:
+            docs = retrieve_semantic(msg, top_k=20, score_threshold=1.5)
 
-    print(f"Time left: {mins_left():.1f} min")
+            if not docs:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary":   "No closely matching records found. Try a more specific query — e.g. a SAP ID, state name, band, or alarm type.",
+                    "records":   [], "columns": DISPLAY_COLUMNS,
+                    "retrieved": 0,  "history": history, "download": False
+                })}
 
-    # Build IDF
-    N   = total
-    idf = {w: math.log((N+1)/(c+1))+1.0 for w,c in doc_freq.most_common(IDF_TOP)}
-    del doc_freq
-    gc.collect()
-    buf = io.BytesIO()
-    pickle.dump(idf, buf)
-    s3.put_object(Bucket=BUCKET, Key=IDF_KEY, Body=buf.getvalue())
-    print(f"IDF saved: {len(idf):,} terms | time left: {mins_left():.1f} min")
+            summary = ask_groq(msg, docs, history)
+            h2 = (history + [
+                {"role": "user", "content": msg},
+                {"role": "assistant", "content": summary}
+            ])[-6:]
+            return {"statusCode": 200, "body": json.dumps({
+                "summary": summary, "records": [{c: r.get(c,"") for c in DISPLAY_COLUMNS} for r in docs],
+                "columns": DISPLAY_COLUMNS, "retrieved": len(docs), "history": h2, "download": False
+            })}
 
-    # Build FAISS
-    selected = (bucket_a + bucket_b)[:MAX_ROWS]
-    del bucket_a, bucket_b
-    gc.collect()
-    print(f"Building FAISS on {len(selected):,} rows...")
-
-    nlist     = 200
-    quantizer = faiss.IndexFlatL2(DIM)
-    faiss_idx = faiss.IndexIVFFlat(quantizer, DIM, nlist)
-    BATCH     = 1000
-    metadata  = []
-
-    train_vecs = np.array(
-        [text_to_vec(r["_text"],idf) for r in selected[:10000]],
-        dtype=np.float32
-    )
-    faiss_idx.train(train_vecs)
-    del train_vecs
-    gc.collect()
-
-    for start in range(0, len(selected), BATCH):
-        batch = selected[start:start+BATCH]
-        vecs  = np.array([text_to_vec(r["_text"],idf) for r in batch], dtype=np.float32)
-        faiss_idx.add(vecs)
-        for r in batch:
-            metadata.append({c: r.get(c,"") for c in FAISS_COLUMNS})
-        del vecs, batch
-        gc.collect()
-        if (start//BATCH) % 50 == 0:
-            print(f"  FAISS: {min(start+BATCH,len(selected)):,}/{len(selected):,} | "
-                  f"time left: {mins_left():.1f} min")
-
-    faiss_idx.nprobe = 20
-    faiss.write_index(faiss_idx, "/tmp/faiss.index")
-    s3.upload_file("/tmp/faiss.index", BUCKET, INDEX_KEY)
-    del faiss_idx
-    gc.collect()
-
-    buf = io.BytesIO()
-    pickle.dump(metadata, buf)
-    s3.put_object(Bucket=BUCKET, Key=META_KEY, Body=buf.getvalue())
-    del metadata
-    gc.collect()
-
-    print(f"All done! Time left: {mins_left():.1f} min")
-    return {
-        "statusCode": 200,
-        "body": f"Done. {total:,} rows. {states_saved} SAP maps saved. FAISS: {len(selected):,} rows."
-    }
+    except Exception as e:
+        print(f"Error: {e}")
+        return {"statusCode": 500, "body": json.dumps({"error": str(e)})}
