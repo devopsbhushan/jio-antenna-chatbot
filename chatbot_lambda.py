@@ -236,12 +236,23 @@ def filter_and_sort(results):
 def get_blank_ret_records(state_name):
     """
     Filter:
-    Antenna Classification = 'RET'  (case-insensitive)
-    AND RRH Connect Board ID = blank/'-'
-    AND RRH Connect Port ID  = blank/'-'
+    Antenna Classification = 'RET'
+    AND RET Connect Board ID = '-'
+    AND RET Connect Port ID  = '-'
     Returns ALL columns + State column.
+    Resolves state_name against actual S3 filenames first.
     """
-    sap_map = _load_state_sap(state_name)
+    # Resolve to actual S3 filename
+    actual_names = _discover_s3_states()
+    resolved = state_name
+    if state_name not in actual_names:
+        state_lower = state_name.lower()
+        for name in actual_names:
+            if state_lower.replace("_"," ") in name.lower().replace("_"," "):
+                resolved = name
+                print(f"Resolved state {state_name} -> {resolved}")
+                break
+    sap_map = _load_state_sap(resolved)
     results = []
     total   = 0
     sample_classes = set()
@@ -273,27 +284,92 @@ def get_blank_ret_records(state_name):
     return results
 
 
+# Cache of all actual state filenames discovered from S3
+_s3_state_names = []
+
+def _discover_s3_states():
+    """List all .pkl files in S3 sap/ prefix and cache their names."""
+    global _s3_state_names
+    if _s3_state_names:
+        return _s3_state_names
+    try:
+        resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=SAP_PREFIX)
+        _s3_state_names = [
+            obj["Key"].replace(SAP_PREFIX, "").replace(".pkl", "")
+            for obj in resp.get("Contents", [])
+            if obj["Key"].endswith(".pkl")
+        ]
+        print(f"Discovered {len(_s3_state_names)} state SAP maps in S3: {_s3_state_names}")
+    except Exception as e:
+        print(f"Could not list S3 states: {e}")
+    return _s3_state_names
+
+
+def _match_state_name(state_code):
+    """
+    Match SAP ID state code to actual S3 filename.
+    Tries STATE_CODE_MAP first, then fuzzy-matches against
+    actual S3 filenames to handle variants like
+    JAMMU_KASHMIR vs J_K vs JAMMU-KASHMIR etc.
+    """
+    # Direct map lookup
+    mapped = STATE_CODE_MAP.get(state_code, "")
+    actual_names = _discover_s3_states()
+
+    if mapped and mapped in actual_names:
+        return mapped  # exact match ✅
+
+    # mapped name not in S3 — fuzzy search actual S3 names
+    # e.g. JK → JAMMU_KASHMIR not found → try J_K, JK, JAMMU etc.
+    code_lower = state_code.lower()
+    for name in actual_names:
+        name_lower = name.lower()
+        # Check if state code appears anywhere in the filename
+        if code_lower in name_lower:
+            print(f"Fuzzy match: {state_code} → {name}")
+            return name
+
+    # Last resort: check if mapped value partially matches any S3 name
+    if mapped:
+        mapped_lower = mapped.lower()
+        for name in actual_names:
+            name_lower = name.lower()
+            # Match first word e.g. JAMMU from JAMMU_KASHMIR
+            first_word = mapped_lower.split("_")[0]
+            if first_word and first_word in name_lower:
+                print(f"Partial match: {mapped} → {name}")
+                return name
+
+    return mapped  # return whatever we have, _load_state_sap will handle miss
+
+
 def lookup_sap(sap_id):
     parts      = sap_id.upper().split("-")
     state_code = parts[1] if len(parts) > 1 else ""
-    state_name = STATE_CODE_MAP.get(state_code, "")
+
+    # Try matched state first
+    state_name = _match_state_name(state_code)
     if state_name:
         sap_map = _load_state_sap(state_name)
         records = sap_map.get(sap_id.upper(), [])
         if records:
+            print(f"SAP found in {state_name}: {len(records)} records")
             return records
-    # Fallback scan
-    try:
-        resp = s3.list_objects_v2(Bucket=BUCKET, Prefix=SAP_PREFIX)
-        for obj in resp.get("Contents", []):
-            key   = obj["Key"]
-            sname = key.replace(SAP_PREFIX, "").replace(".pkl", "")
-            smap  = _load_state_sap(sname)
-            recs  = smap.get(sap_id.upper(), [])
-            if recs:
-                return recs
-    except Exception as e:
-        print(f"Fallback scan error: {e}")
+
+    # Full fallback: scan all discovered S3 states
+    print(f"SAP {sap_id} not in {state_name}, scanning all states...")
+    for sname in _discover_s3_states():
+        if sname == state_name:
+            continue  # already tried
+        smap = _load_state_sap(sname)
+        recs = smap.get(sap_id.upper(), [])
+        if recs:
+            print(f"SAP found in fallback {sname}: {len(recs)} records")
+            # Update STATE_CODE_MAP for future lookups
+            STATE_CODE_MAP[state_code] = sname
+            return recs
+
+    print(f"SAP {sap_id} not found in any state")
     return []
 
 
