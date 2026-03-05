@@ -128,6 +128,27 @@ jobs:
           aws lambda wait function-updated --function-name ${{ env.LAMBDA_CHAT }}
           echo "${{ env.LAMBDA_CHAT }} deployed as Image-type"
 
+      # ── Ensure Function URL exists with auth=NONE ────────────────────────
+      - name: Configure Function URL (auth=NONE)
+        run: |
+          # Check if Function URL already exists
+          URL=$(aws lambda get-function-url-config --function-name ${{ env.LAMBDA_CHAT }}             --query FunctionUrl --output text 2>/dev/null || echo "")
+
+          if [ -z "$URL" ]; then
+            echo "Creating Function URL with AuthType=NONE..."
+            aws lambda create-function-url-config               --function-name ${{ env.LAMBDA_CHAT }}               --auth-type NONE               --cors '{"AllowOrigins":["*"],"AllowMethods":["*"],"AllowHeaders":["*"],"MaxAge":300}'               --no-cli-pager
+          else
+            echo "Updating Function URL AuthType to NONE..."
+            aws lambda update-function-url-config               --function-name ${{ env.LAMBDA_CHAT }}               --auth-type NONE               --cors '{"AllowOrigins":["*"],"AllowMethods":["*"],"AllowHeaders":["*"],"MaxAge":300}'               --no-cli-pager
+          fi
+
+          # Add resource-based policy to allow public invoke
+          aws lambda add-permission             --function-name ${{ env.LAMBDA_CHAT }}             --statement-id AllowPublicAccess             --action lambda:InvokeFunctionUrl             --principal "*"             --function-url-auth-type NONE             --no-cli-pager 2>/dev/null || true
+
+          # Print the Function URL
+          FURL=$(aws lambda get-function-url-config --function-name ${{ env.LAMBDA_CHAT }}             --query FunctionUrl --output text)
+          echo "Function URL: $FURL"
+
       # ── Deploy FAISS index Lambda ──────────────────────────────────────────
       - name: Deploy Build_FAISS_Index (container)
         run: |
@@ -191,4 +212,6 @@ jobs:
           echo "Next steps:"
           echo "  1. Build_FAISS_Index -> Test -> {}  (wait ~15 min)"
           echo "  2. antenna-chatbot_Lambda -> ping test"
+          FURL=$(aws lambda get-function-url-config --function-name ${{ env.LAMBDA_CHAT }} --query FunctionUrl --output text 2>/dev/null || echo "check console")
+          echo "  Function URL: $FURL"
           echo "================================================"
