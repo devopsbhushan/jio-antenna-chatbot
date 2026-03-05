@@ -632,6 +632,36 @@ def lambda_handler(event, context):
                     "history": history, "download": False
                 })}
 
+            # ── Post-filter 1: state filter if state mentioned in query ──
+            if state_name:
+                # state_name is S3 format e.g. MAHARASHTRA — match against State column
+                state_filtered = [
+                    r for r in docs
+                    if state_name.replace("_", " ").upper() in
+                       r.get("State", "").upper().replace("_", " ")
+                ]
+                if state_filtered:
+                    print(f"State filter '{state_name}': {len(docs)} -> {len(state_filtered)} records")
+                    docs = state_filtered
+                else:
+                    print(f"State filter '{state_name}' matched 0 — keeping all {len(docs)} records")
+
+            # ── Post-filter 2: alarm filter if query mentions alarm/alert ──
+            alarm_query = bool(re.search(
+                r"\b(alarm|alert|fault|error|fail|warning|vswr|ald|ret not calibrated)\b",
+                msg, re.IGNORECASE
+            ))
+            if alarm_query:
+                alarm_filtered = [
+                    r for r in docs
+                    if r.get("Alarm details", "").strip() not in ("", "-", "N/A", "null", "None")
+                ]
+                if alarm_filtered:
+                    print(f"Alarm filter: {len(docs)} -> {len(alarm_filtered)} records")
+                    docs = alarm_filtered
+                else:
+                    print(f"Alarm filter matched 0 — keeping all {len(docs)} records")
+
             summary = ask_langchain(msg, docs, history)
             h2 = (history + [
                 {"role": "user",      "content": msg},
