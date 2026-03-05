@@ -3,10 +3,8 @@ import os, re, hashlib, ssl, io, csv
 import urllib.request, urllib.error
 from datetime import datetime, timedelta
 
-# ── LangChain imports (zero cost — open source, uses Groq free tier) ──
-# Pinned: groq==0.7.0 + langchain-groq==0.1.3 + langchain==0.1.20
-from langchain_groq import ChatGroq
-from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+# LangChain imported lazily inside _get_llm() to avoid Lambda crash on import error
+GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
 BUCKET     = os.environ["BUCKET"]
 GROQ_KEY   = os.environ["GROQ_API_KEY"]
@@ -20,18 +18,33 @@ _idf       = None
 _meta      = None
 _sap_cache = {}
 
-# ── LangChain LLM — Groq free tier, zero cost ──
-_llm = None
+# ── LangChain LLM — lazy import so Lambda doesn't crash if package missing ──
+_llm          = None
+_langchain_ok = None   # None=untested, True=working, False=failed
 
 def _get_llm():
-    global _llm
-    if _llm is None:
+    """
+    Lazy-import LangChain. If import fails (version conflict, missing package),
+    sets _langchain_ok=False so callers fall back to direct urllib Groq call.
+    """
+    global _llm, _langchain_ok
+    if _langchain_ok is False:
+        return None
+    if _llm is not None:
+        return _llm
+    try:
+        from langchain_groq import ChatGroq
         _llm = ChatGroq(
             api_key=GROQ_KEY,
             model_name="llama-3.1-8b-instant",
             temperature=0.0,
             max_tokens=300
         )
+        _langchain_ok = True
+        print("LangChain ChatGroq initialised successfully")
+    except Exception as e:
+        _langchain_ok = False
+        print(f"LangChain unavailable ({e}), falling back to direct Groq API")
     return _llm
 
 COLUMNS = [
@@ -333,50 +346,142 @@ def build_context(docs):
     ])
 
 
+def _groq_direct(system_prompt, history, user_msg):
+    """Direct Groq API call via urllib — fallback when LangChain unavailable."""
+    import ssl
+    ctx = ssl.create_default_context()
+    messages = [{"role": "system", "content": system_prompt}]
+    for h in history:
+        if h.get("role") in ("user", "assistant"):
+            messages.append({"role": h["role"], "content": h["content"]})
+    messages.append({"role": "user", "content": user_msg})
+    payload = json.dumps({
+        "model": "llama-3.1-8b-instant",
+        "messages": messages,
+        "max_tokens": 300,
+        "temperature": 0.0
+    }).encode("utf-8")
+    try:
+        req = urllib.request.Request(
+            GROQ_URL, data=payload,
+            headers={"Authorization": f"Bearer {GROQ_KEY}",
+                     "Content-Type": "application/json",
+                     "User-Agent": "python-urllib/3.11"},
+            method="POST"
+        )
+        with urllib.request.urlopen(req, timeout=30, context=ctx) as r:
+            return json.loads(r.read())["choices"][0]["message"]["content"]
+    except Exception as e:
+        return f"Summary unavailable: {e}"
+
+
 def ask_langchain(question, docs, history):
     """
-    LangChain-powered RAG:
-    - ChatGroq LLM (Groq free tier — zero cost)
-    - ConversationBufferWindowMemory (last 3 turns)
-    - Strict anti-hallucination system prompt
-    - Context injected from FAISS-retrieved docs
+    LangChain-powered RAG with automatic fallback to direct Groq API.
+    - Tries ChatGroq (LangChain) first
+    - Falls back to urllib Groq call if LangChain unavailable
+    - Zero cost either way (Groq free tier)
     """
     if not docs:
         return "No matching records found in the database for this query."
 
-    llm     = _get_llm()
     context = build_context(docs)
+    system  = (
+        "You are a Jio antenna inventory assistant. "
+        "Answer ONLY using the database records provided below. "
+        "Do NOT invent, assume, or add any information not present in the data. "
+        "If the data does not contain enough information to answer, say so clearly. "
+        "Be concise: 2-4 lines max. No bullet points.
 
-    # Build message list from history + system + context + question
-    messages = [
-        SystemMessage(content=(
-            "You are a Jio antenna inventory assistant. "
-            "Answer ONLY using the database records provided below. "
-            "Do NOT invent, assume, or add any information not present in the data. "
-            "If the data does not contain enough information to answer, say so clearly. "
-            "Be concise: 2-4 lines max. No bullet points.\n\n"
-            f"Database records:\n{context}"
-        ))
+"
+        f"Database records:
+{context}"
+    )
+
+    llm = _get_llm()
+
+    if llm is not None:
+        # ── LangChain path ──
+        try:
+            from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+            messages = [SystemMessage(content=system)]
+            for h in history:
+                role = h.get("role", "")
+                content = h.get("content", "")
+                if role == "user":
+                    messages.append(HumanMessage(content=content))
+                elif role == "assistant":
+                    messages.append(AIMessage(content=content))
+            messages.append(HumanMessage(content=question))
+            response = llm.invoke(messages)
+            print("LangChain RAG response OK")
+            return response.content
+        except Exception as e:
+            print(f"LangChain invoke error ({e}), falling back to urllib")
+
+    # ── Direct urllib fallback ──
+    print("Using direct Groq urllib fallback")
+    return _groq_direct(system, history, question)
+
+
+# ════════════════════════════════════════════════════════════
+#  GENERAL QUESTION DETECTOR
+# ════════════════════════════════════════════════════════════
+
+def is_general_question(msg):
+    """
+    Detect questions that are general knowledge / explanatory —
+    these do NOT need FAISS search. Answer directly from LLM.
+    Examples: "why is RET blank", "what is RET", "explain antenna classification"
+    """
+    lower = msg.lower()
+    general_patterns = [
+        r"\bwhy\b", r"\bwhat is\b", r"\bwhat are\b",
+        r"\bexplain\b", r"\bhow does\b", r"\bhow do\b",
+        r"\bwhat does\b", r"\btell me about\b", r"\bdescribe\b",
+        r"\bmeaning of\b", r"\bdefinition\b", r"\bpurpose of\b",
+        r"\breason\b", r"\bcause\b",
     ]
+    return any(re.search(p, lower) for p in general_patterns)
 
-    # Add conversation history (LangChain message objects)
-    for h in history:
-        role    = h.get("role", "")
-        content = h.get("content", "")
-        if role == "user":
-            messages.append(HumanMessage(content=content))
-        elif role == "assistant":
-            messages.append(AIMessage(content=content))
 
-    # Add current question
-    messages.append(HumanMessage(content=question))
+def ask_general(question, history):
+    """
+    Answer general/explanatory questions directly from LLM —
+    no FAISS needed, no S3 loads, fast response.
+    Uses LangChain if available, falls back to direct Groq urllib.
+    """
+    system = (
+        "You are a Jio telecom antenna inventory expert. "
+        "Answer the question clearly and concisely based on your knowledge "
+        "of telecom antenna systems, RET (Remote Electrical Tilt), "
+        "RRH (Remote Radio Head), antenna classifications, and Jio network. "
+        "Be concise: 3-5 lines max. No bullet points."
+    )
 
-    try:
-        response = llm.invoke(messages)
-        return response.content
-    except Exception as e:
-        print(f"LangChain/Groq error: {e}")
-        return f"Summary unavailable: {e}"
+    llm = _get_llm()
+
+    if llm is not None:
+        try:
+            from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+            messages = [SystemMessage(content=system)]
+            for h in history:
+                role = h.get("role", "")
+                content = h.get("content", "")
+                if role == "user":
+                    messages.append(HumanMessage(content=content))
+                elif role == "assistant":
+                    messages.append(AIMessage(content=content))
+            messages.append(HumanMessage(content=question))
+            response = llm.invoke(messages)
+            print("LangChain general response OK")
+            return response.content
+        except Exception as e:
+            print(f"LangChain general error ({e}), falling back to urllib")
+
+    # Direct urllib fallback
+    print("Using direct Groq urllib for general question")
+    return _groq_direct(system, history, question)
 
 
 # ════════════════════════════════════════════════════════════
@@ -406,6 +511,7 @@ def lambda_handler(event, context):
         sap_id     = extract_sap_id(msg)
         state_name = extract_state_name(msg)
         blank_ret  = is_blank_ret_query(msg)
+        general_q  = is_general_question(msg)
 
         # ── Blank RET download ──────────────────────────────────────────────
         if blank_ret:
@@ -486,6 +592,22 @@ def lambda_handler(event, context):
             return {"statusCode": 200, "body": json.dumps({
                 "summary": "", "records": docs, "columns": COLUMNS,
                 "retrieved": len(docs), "history": history, "download": False
+            })}
+
+        # ── General knowledge question (no FAISS needed) ───────────────────
+        elif general_q:
+            summary = ask_general(msg, history)
+            h2 = (history + [
+                {"role": "user",      "content": msg},
+                {"role": "assistant", "content": summary}
+            ])[-6:]
+            return {"statusCode": 200, "body": json.dumps({
+                "summary":   summary,
+                "records":   [],
+                "columns":   DISPLAY_COLUMNS,
+                "retrieved": 0,
+                "history":   h2,
+                "download":  False
             })}
 
         # ── LangChain semantic search + RAG ─────────────────────────────────
