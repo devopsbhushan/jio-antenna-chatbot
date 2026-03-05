@@ -132,15 +132,20 @@ def lambda_handler(event, context):
         print(f"  Saved {state}: {len(state_sap)} SAP IDs | "
               f"total rows: {total:,} | time left: {mins_left():.1f} min")
 
-        # Extract SAP code from first SAP ID → e.g. "I-JK-SGAR-ENB-0336" → "JK"
+        # Extract ALL SAP codes used in this state file → map code -> [state1, state2, ...]
+        # A code like "JK" may appear in both JAMMU and KASHMIR
+        state_codes_seen = set()
         for sap_id in state_sap:
             parts = sap_id.upper().split("-")
             if len(parts) > 1:
                 sap_code = parts[1]
-                if sap_code not in code_map:
-                    code_map[sap_code] = state
-                    print(f"    code_map: {sap_code} -> {state}")
-                break
+                state_codes_seen.add(sap_code)
+        for sap_code in state_codes_seen:
+            if sap_code not in code_map:
+                code_map[sap_code] = [state]
+            elif state not in code_map[sap_code]:
+                code_map[sap_code].append(state)
+        print(f"    SAP codes in {state}: {sorted(state_codes_seen)}")
         del state_sap, buf
         gc.collect()
 
