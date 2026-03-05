@@ -1,7 +1,14 @@
-name: Deploy Lambda Functions
+name: Deploy Lambda (Docker)
 
 on:
   workflow_dispatch:
+
+env:
+  AWS_REGION:       ${{ secrets.AWS_REGION }}
+  ECR_REPO_CHAT:    antenna-chatbot
+  ECR_REPO_FAISS:   antenna-faiss-index
+  LAMBDA_CHAT:      antenna-chatbot_Lambda
+  LAMBDA_FAISS:     Build_FAISS_Index
 
 jobs:
   deploy:
@@ -10,96 +17,171 @@ jobs:
 
     steps:
 
-      - name: Checkout repository
+      - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set up Python 3.11
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.11'
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-access-key-id:     ${{ secrets.AWS_ACCESS_KEY_ID }}
           aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-          aws-region: ${{ secrets.AWS_REGION }}
+          aws-region:            ${{ secrets.AWS_REGION }}
 
-      - name: Clear existing layers
+      # ── ECR: create repos if they don't exist ──────────────────────────────
+      - name: Ensure ECR repos exist
         run: |
-          aws lambda update-function-configuration --function-name Build_FAISS_Index --layers --no-cli-pager 2>/dev/null || true
-          aws lambda wait function-updated --function-name Build_FAISS_Index 2>/dev/null || true
-          aws lambda update-function-configuration --function-name antenna-chatbot_Lambda --layers --no-cli-pager 2>/dev/null || true
-          aws lambda wait function-updated --function-name antenna-chatbot_Lambda 2>/dev/null || true
-          echo "Layers cleared"
+          aws ecr describe-repositories --repository-names antenna-chatbot --no-cli-pager 2>/dev/null ||           aws ecr create-repository --repository-name antenna-chatbot             --image-scanning-configuration scanOnPush=false             --image-tag-mutability MUTABLE --no-cli-pager
 
-      - name: Download wheels
+          aws ecr describe-repositories --repository-names antenna-faiss-index --no-cli-pager 2>/dev/null ||           aws ecr create-repository --repository-name antenna-faiss-index             --image-scanning-configuration scanOnPush=false             --image-tag-mutability MUTABLE --no-cli-pager
+
+          echo "ECR repos ready"
+
+      # ── ECR login ──────────────────────────────────────────────────────────
+      - name: Login to ECR
+        id: ecr_login
         run: |
-          mkdir -p /tmp/wheels
-          pip download "numpy==1.24.4" --dest /tmp/wheels --only-binary=:all: --python-version 3.11 --platform manylinux2014_x86_64 --no-deps
-          pip download "faiss-cpu==1.7.4" --dest /tmp/wheels --only-binary=:all: --python-version 3.11 --platform manylinux2014_x86_64 --no-deps
-          ls -lh /tmp/wheels/
+          ACCOUNT=$(aws sts get-caller-identity --query Account --output text)
+          echo "account=$ACCOUNT" >> $GITHUB_OUTPUT
+          aws ecr get-login-password --region ${{ secrets.AWS_REGION }} |           docker login --username AWS --password-stdin             ${ACCOUNT}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com
+          echo "ECR_BASE=${ACCOUNT}.dkr.ecr.${{ secrets.AWS_REGION }}.amazonaws.com" >> $GITHUB_ENV
 
-      - name: Build layer
+      # ── DELETE old images before pushing new ones (avoid ECR storage charges) ──
+      - name: Delete old ECR images
         run: |
-          mkdir -p layer/python
-          pip install /tmp/wheels/numpy*.whl --target layer/python --no-deps --quiet
-          FAISS=$(ls /tmp/wheels/ | grep -i faiss | head -1)
-          pip install /tmp/wheels/$FAISS --target layer/python --no-deps --quiet
-          find layer/python -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
-          find layer/python -type d -name "*.dist-info" -exec rm -rf {} + 2>/dev/null || true
-          SIZE=$(du -sm layer/ | cut -f1)
-          echo "Layer size: ${SIZE}MB"
-          cd layer && zip -r ../layer.zip python/ -q && cd ..
-          ls -lh layer.zip
+          for REPO in antenna-chatbot antenna-faiss-index; do
+            echo "Cleaning $REPO..."
+            DIGESTS=$(aws ecr list-images --repository-name $REPO               --query 'imageIds[*]' --output json 2>/dev/null || echo "[]")
+            COUNT=$(echo $DIGESTS | python3 -c "import sys,json; print(len(json.load(sys.stdin)))")
+            if [ "$COUNT" -gt "0" ]; then
+              aws ecr batch-delete-image --repository-name $REPO                 --image-ids "$DIGESTS" --no-cli-pager
+              echo "  Deleted $COUNT old image(s) from $REPO"
+            else
+              echo "  $REPO is already empty"
+            fi
+          done
 
-      - name: Build handler zips
+      # ── Build chatbot image ────────────────────────────────────────────────
+      - name: Build chatbot Docker image
         run: |
-          mkdir -p h_faiss h_chat
-          cp build_index_lambda.py h_faiss/lambda_function.py
-          cd h_faiss && zip -r ../build_index.zip . -q && cd ..
-          cp chatbot_lambda.py h_chat/lambda_function.py
-          cp embedder.py h_chat/ 2>/dev/null || true
-          cd h_chat && zip -r ../chatbot.zip . -q && cd ..
-          echo "Handler sizes:"
-          ls -lh build_index.zip chatbot.zip
+          cat > Dockerfile.chatbot << 'EOF'
+          FROM public.ecr.aws/lambda/python:3.11
+          RUN pip install --no-cache-dir               boto3==1.34.0               numpy==1.24.4               faiss-cpu==1.7.4               langchain==0.1.20               langchain-community==0.0.38               groq==0.9.0
+          COPY chatbot_lambda.py ${LAMBDA_TASK_ROOT}/lambda_function.py
+          CMD ["lambda_function.lambda_handler"]
+          EOF
+          docker build -f Dockerfile.chatbot -t antenna-chatbot:latest .
+          echo "Chatbot image built"
 
-      - name: Upload to S3
+      # ── Build FAISS index image ────────────────────────────────────────────
+      - name: Build FAISS index Docker image
         run: |
-          aws s3 cp layer.zip       s3://${{ secrets.S3_BUCKET }}/deployments/layer.zip
-          aws s3 cp build_index.zip s3://${{ secrets.S3_BUCKET }}/deployments/build_index.zip
-          aws s3 cp chatbot.zip     s3://${{ secrets.S3_BUCKET }}/deployments/chatbot.zip
-          echo "Uploaded to S3"
+          cat > Dockerfile.faiss << 'EOF'
+          FROM public.ecr.aws/lambda/python:3.11
+          RUN pip install --no-cache-dir               boto3==1.34.0               numpy==1.24.4               faiss-cpu==1.7.4
+          COPY build_index_lambda.py ${LAMBDA_TASK_ROOT}/lambda_function.py
+          CMD ["lambda_function.lambda_handler"]
+          EOF
+          docker build -f Dockerfile.faiss -t antenna-faiss-index:latest .
+          echo "FAISS index image built"
 
-      - name: Publish layer
-        id: layer
+      # ── Push both images to ECR ────────────────────────────────────────────
+      - name: Push images to ECR
         run: |
-          ARN=$(aws lambda publish-layer-version --layer-name rag-numpy-faiss --description "numpy + faiss manylinux2014" --content S3Bucket=${{ secrets.S3_BUCKET }},S3Key=deployments/layer.zip --compatible-runtimes python3.11 --query LayerVersionArn --output text)
-          echo "arn=$ARN" >> $GITHUB_OUTPUT
-          echo "Layer ARN: $ARN"
+          docker tag antenna-chatbot:latest             ${{ env.ECR_BASE }}/antenna-chatbot:latest
+          docker push ${{ env.ECR_BASE }}/antenna-chatbot:latest
 
-      - name: Deploy Build_FAISS_Index
+          docker tag antenna-faiss-index:latest             ${{ env.ECR_BASE }}/antenna-faiss-index:latest
+          docker push ${{ env.ECR_BASE }}/antenna-faiss-index:latest
+
+          echo "Images pushed to ECR"
+
+      # ── Get Lambda execution role from existing function ───────────────────
+      - name: Get Lambda role ARN
+        id: role
         run: |
-          aws lambda update-function-code --function-name Build_FAISS_Index --s3-bucket ${{ secrets.S3_BUCKET }} --s3-key deployments/build_index.zip --no-cli-pager
-          aws lambda wait function-updated --function-name Build_FAISS_Index
-          aws lambda update-function-configuration --function-name Build_FAISS_Index --layers ${{ steps.layer.outputs.arn }} --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }}}" --no-cli-pager
-          aws lambda wait function-updated --function-name Build_FAISS_Index
-          echo "Build_FAISS_Index deployed"
+          ROLE=$(aws lambda get-function-configuration             --function-name ${{ env.LAMBDA_FAISS }}             --query Role --output text 2>/dev/null ||           aws lambda get-function-configuration             --function-name ${{ env.LAMBDA_CHAT }}             --query Role --output text 2>/dev/null || echo "")
+          echo "arn=$ROLE" >> $GITHUB_OUTPUT
+          echo "Role: $ROLE"
 
-      - name: Deploy antenna-chatbot_Lambda
+      # ── Deploy chatbot Lambda ──────────────────────────────────────────────
+      - name: Deploy antenna-chatbot_Lambda (container)
         run: |
-          aws lambda update-function-code --function-name antenna-chatbot_Lambda --s3-bucket ${{ secrets.S3_BUCKET }} --s3-key deployments/chatbot.zip --no-cli-pager
-          aws lambda wait function-updated --function-name antenna-chatbot_Lambda
-          aws lambda update-function-configuration --function-name antenna-chatbot_Lambda --layers ${{ steps.layer.outputs.arn }} --timeout 900 --memory-size 3008 --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }},GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}}" --no-cli-pager
-          aws lambda wait function-updated --function-name antenna-chatbot_Lambda
-          echo "antenna-chatbot_Lambda deployed"
+          IMAGE_URI=${{ env.ECR_BASE }}/antenna-chatbot:latest
+          ROLE=${{ steps.role.outputs.arn }}
 
+          # Check if function exists
+          EXISTS=$(aws lambda get-function --function-name ${{ env.LAMBDA_CHAT }}             --query 'Configuration.FunctionName' --output text 2>/dev/null || echo "")
+
+          if [ -z "$EXISTS" ]; then
+            echo "Creating ${{ env.LAMBDA_CHAT }}..."
+            aws lambda create-function               --function-name ${{ env.LAMBDA_CHAT }}               --package-type Image               --code ImageUri=$IMAGE_URI               --role $ROLE               --timeout 30               --memory-size 1024               --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }},GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}}"               --no-cli-pager
+          else
+            echo "Updating ${{ env.LAMBDA_CHAT }}..."
+            aws lambda update-function-code               --function-name ${{ env.LAMBDA_CHAT }}               --image-uri $IMAGE_URI               --no-cli-pager
+            aws lambda wait function-updated --function-name ${{ env.LAMBDA_CHAT }}
+            aws lambda update-function-configuration               --function-name ${{ env.LAMBDA_CHAT }}               --timeout 30               --memory-size 1024               --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }},GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}}"               --no-cli-pager
+          fi
+
+          aws lambda wait function-updated --function-name ${{ env.LAMBDA_CHAT }}
+          echo "${{ env.LAMBDA_CHAT }} deployed"
+
+      # ── Deploy FAISS index Lambda ──────────────────────────────────────────
+      - name: Deploy Build_FAISS_Index (container)
+        run: |
+          IMAGE_URI=${{ env.ECR_BASE }}/antenna-faiss-index:latest
+          ROLE=${{ steps.role.outputs.arn }}
+
+          EXISTS=$(aws lambda get-function --function-name ${{ env.LAMBDA_FAISS }}             --query 'Configuration.FunctionName' --output text 2>/dev/null || echo "")
+
+          if [ -z "$EXISTS" ]; then
+            echo "Creating ${{ env.LAMBDA_FAISS }}..."
+            aws lambda create-function               --function-name ${{ env.LAMBDA_FAISS }}               --package-type Image               --code ImageUri=$IMAGE_URI               --role $ROLE               --timeout 900               --memory-size 3008               --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }}}"               --no-cli-pager
+          else
+            echo "Updating ${{ env.LAMBDA_FAISS }}..."
+            aws lambda update-function-code               --function-name ${{ env.LAMBDA_FAISS }}               --image-uri $IMAGE_URI               --no-cli-pager
+            aws lambda wait function-updated --function-name ${{ env.LAMBDA_FAISS }}
+            aws lambda update-function-configuration               --function-name ${{ env.LAMBDA_FAISS }}               --timeout 900               --memory-size 3008               --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }}}"               --no-cli-pager
+          fi
+
+          aws lambda wait function-updated --function-name ${{ env.LAMBDA_FAISS }}
+          echo "${{ env.LAMBDA_FAISS }} deployed"
+
+      # ── Clean up old layer versions (free up Lambda storage) ──────────────
+      - name: Delete old Lambda layers
+        run: |
+          for LAYER in rag-numpy-faiss; do
+            VERSIONS=$(aws lambda list-layer-versions --layer-name $LAYER               --query 'LayerVersions[*].Version' --output text 2>/dev/null || echo "")
+            for VER in $VERSIONS; do
+              aws lambda delete-layer-version --layer-name $LAYER --version-number $VER --no-cli-pager 2>/dev/null || true
+              echo "Deleted layer $LAYER v$VER"
+            done
+          done
+          echo "Old layers cleaned"
+
+      # ── Remove layers from Lambda functions (no longer needed) ────────────
+      - name: Remove layers from Lambda functions
+        run: |
+          for FN in ${{ env.LAMBDA_CHAT }} ${{ env.LAMBDA_FAISS }}; do
+            aws lambda update-function-configuration               --function-name $FN --layers --no-cli-pager 2>/dev/null || true
+            aws lambda wait function-updated --function-name $FN 2>/dev/null || true
+            echo "Layers removed from $FN"
+          done
+
+      # ── Summary ───────────────────────────────────────────────────────────
       - name: Summary
         run: |
           echo "================================================"
-          echo "DEPLOYMENT COMPLETE"
-          echo "Layer: ${{ steps.layer.outputs.arn }}"
+          echo "DOCKER DEPLOYMENT COMPLETE"
+          echo "ECR base: ${{ env.ECR_BASE }}"
+          echo ""
+          echo "Images deployed:"
+          echo "  antenna-chatbot:latest      -> ${{ env.LAMBDA_CHAT }}"
+          echo "  antenna-faiss-index:latest  -> ${{ env.LAMBDA_FAISS }}"
+          echo ""
+          echo "Old images deleted from ECR (zero storage cost)"
+          echo "Old Lambda layers deleted"
+          echo ""
           echo "Next steps:"
-          echo "  1. Build_FAISS_Index -> Test -> {}  (wait 15 min)"
+          echo "  1. Build_FAISS_Index -> Test -> {}  (wait ~15 min)"
           echo "  2. antenna-chatbot_Lambda -> ping test"
           echo "================================================"
