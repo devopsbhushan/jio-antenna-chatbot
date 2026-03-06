@@ -589,49 +589,61 @@ def lambda_handler(event, context):
                 msg, re.IGNORECASE
             ))
             if all_states_requested:
-                # Build dynamically from all state SAP pkl files
+                import gc
                 code_map = _load_code_map()
-                all_state_files = []
-                for v in code_map.values():
-                    if isinstance(v, list):
-                        all_state_files.extend(v)
-                    else:
-                        all_state_files.append(v)
-                all_state_files = sorted(set(all_state_files))
+                all_state_files = sorted(set(
+                    s for v in code_map.values()
+                    for s in (v if isinstance(v, list) else [v])
+                ))
 
-                all_docs = []
-                for state_file in all_state_files:
-                    state_docs = get_blank_ret_records(state_file)
-                    all_docs.extend(state_docs)
-                    print(f"All-states: {state_file} -> {len(state_docs)} blank RET rows")
+                tmp_path  = "/tmp/blank_ret_all.csv"
+                total_rows = 0
 
-                if not all_docs:
+                with open(tmp_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction="ignore")
+                    writer.writeheader()
+
+                    for state_file in all_state_files:
+                        # Load, filter, write, then CLEAR from cache immediately
+                        sap_map = _load_state_sap(state_file)
+                        state_rows = 0
+                        for records in sap_map.values():
+                            for r in records:
+                                ret_board = str(r.get("RET Connect Board ID","")).strip()
+                                ret_port  = str(r.get("RET Connect Port ID", "")).strip()
+                                ant_class = str(r.get("Antenna Classification","")).strip()
+                                if ret_board == "-" and ret_port == "-" and ant_class.upper() == "RET":
+                                    row = {c: r.get(c,"") for c in COLUMNS}
+                                    row["State"] = state_file
+                                    writer.writerow(row)
+                                    state_rows += 1
+                        total_rows += state_rows
+                        # Critical: evict from cache to free memory
+                        _sap_cache.pop(state_file, None)
+                        gc.collect()
+                        print(f"All-states: {state_file} -> {state_rows} rows | total so far: {total_rows:,}")
+
+                if total_rows == 0:
                     return {"statusCode": 200, "body": json.dumps({
                         "summary": "No blank RET records found across all states.",
                         "records": [], "columns": COLUMNS, "retrieved": 0,
                         "history": history, "download": False
                     })}
 
-                # Write CSV to S3
+                # Upload /tmp file directly (no in-memory buffer)
                 csv_key = BLANK_RET_KEY
-                buf = io.StringIO()
-                writer = csv.DictWriter(buf, fieldnames=COLUMNS, extrasaction="ignore")
-                writer.writeheader()
-                for row in all_docs:
-                    writer.writerow({c: row.get(c, "") for c in COLUMNS})
-                s3.put_object(
-                    Bucket=BUCKET, Key=csv_key,
-                    Body=buf.getvalue().encode("utf-8"), ContentType="text/csv"
-                )
+                s3.upload_file(tmp_path, BUCKET, csv_key)
+                import os; os.remove(tmp_path)
+
                 url = s3.generate_presigned_url(
                     "get_object",
                     Params={"Bucket": BUCKET, "Key": csv_key},
                     ExpiresIn=3600
                 )
-                print(f"All-states CSV: {len(all_docs):,} rows uploaded to {csv_key}")
+                print(f"All-states CSV uploaded: {total_rows:,} rows -> {csv_key}")
                 return {"statusCode": 200, "body": json.dumps({
-                    "summary": f"Blank RET data for all states ready — {len(all_docs):,} records across {len(all_state_files)} states. Click to download.",
-                    "records": [], "columns": COLUMNS, "retrieved": len(all_docs),
+                    "summary": f"Blank RET data for all states ready — {total_rows:,} records across {len(all_state_files)} states. Click to download.",
+                    "records": [], "columns": COLUMNS, "retrieved": total_rows,
                     "history": history, "download": False,
                     "presigned_url": url, "filename": "Blank_RET_All_States.csv"
                 })}
