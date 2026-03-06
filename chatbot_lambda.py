@@ -304,11 +304,13 @@ def get_blank_ret_records(state_name):
     for sap_id, records in sap_map.items():
         for r in records:
             total += 1
-            ret_board = r.get("RET Connect Board ID", "").strip()
-            ret_port  = r.get("RET Connect Port ID",  "").strip()
-            ant_class = r.get("Antenna Classification","").strip()
+            ret_board = str(r.get("RET Connect Board ID", "")).strip()
+            ret_port  = str(r.get("RET Connect Port ID",  "")).strip()
+            ant_class = str(r.get("Antenna Classification","")).strip()
             sample_classes.add(repr(ant_class))
-            if ret_board == "-" and ret_port == "-" and ant_class.upper() == "RET":
+            board_blank = ret_board in ("", "-", "N/A", "null", "None", "nan", "0")
+            port_blank  = ret_port  in ("", "-", "N/A", "null", "None", "nan", "0")
+            if board_blank and port_blank and ant_class.upper() == "RET":
                 row = dict(r)
                 row["State"] = resolved
                 results.append(row)
@@ -589,21 +591,52 @@ def lambda_handler(event, context):
                 msg, re.IGNORECASE
             ))
             if all_states_requested:
-                try:
-                    url = s3.generate_presigned_url(
-                        "get_object",
-                        Params={"Bucket": BUCKET, "Key": BLANK_RET_KEY},
-                        ExpiresIn=3600
-                    )
-                    return {"statusCode": 200, "body": json.dumps({
-                        "summary": "Blank RET data for all states is ready. Click below to download.",
-                        "records": [], "columns": COLUMNS, "retrieved": 0,
-                        "history": history, "download": False,
-                        "presigned_url": url, "filename": "Blank_RET_All_States.csv"
-                    })}
-                except Exception as e:
-                    return {"statusCode": 500, "body": json.dumps({"error": f"Download link error: {e}"})}
+                # Build dynamically from all state SAP pkl files
+                code_map = _load_code_map()
+                all_state_files = []
+                for v in code_map.values():
+                    if isinstance(v, list):
+                        all_state_files.extend(v)
+                    else:
+                        all_state_files.append(v)
+                all_state_files = sorted(set(all_state_files))
 
+                all_docs = []
+                for state_file in all_state_files:
+                    state_docs = get_blank_ret_records(state_file)
+                    all_docs.extend(state_docs)
+                    print(f"All-states: {state_file} -> {len(state_docs)} blank RET rows")
+
+                if not all_docs:
+                    return {"statusCode": 200, "body": json.dumps({
+                        "summary": "No blank RET records found across all states.",
+                        "records": [], "columns": COLUMNS, "retrieved": 0,
+                        "history": history, "download": False
+                    })}
+
+                # Write CSV to S3
+                csv_key = BLANK_RET_KEY
+                buf = io.StringIO()
+                writer = csv.DictWriter(buf, fieldnames=COLUMNS, extrasaction="ignore")
+                writer.writeheader()
+                for row in all_docs:
+                    writer.writerow({c: row.get(c, "") for c in COLUMNS})
+                s3.put_object(
+                    Bucket=BUCKET, Key=csv_key,
+                    Body=buf.getvalue().encode("utf-8"), ContentType="text/csv"
+                )
+                url = s3.generate_presigned_url(
+                    "get_object",
+                    Params={"Bucket": BUCKET, "Key": csv_key},
+                    ExpiresIn=3600
+                )
+                print(f"All-states CSV: {len(all_docs):,} rows uploaded to {csv_key}")
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary": f"Blank RET data for all states ready — {len(all_docs):,} records across {len(all_state_files)} states. Click to download.",
+                    "records": [], "columns": COLUMNS, "retrieved": len(all_docs),
+                    "history": history, "download": False,
+                    "presigned_url": url, "filename": "Blank_RET_All_States.csv"
+                })}
             elif state_name:
                 docs     = get_blank_ret_records(state_name)
                 label    = state_name
