@@ -425,6 +425,50 @@ def ask_langchain(question, docs, history):
 #  GENERAL QUESTION DETECTOR
 # ════════════════════════════════════════════════════════════
 
+def is_greeting(msg):
+    """Detect greetings and chitchat that need no data lookup at all."""
+    lower = msg.strip().lower()
+    greetings = [
+        "hi", "hello", "hey", "hii", "helo", "howdy", "namaste",
+        "good morning", "good afternoon", "good evening", "good night",
+        "thanks", "thank you", "ok", "okay", "bye", "goodbye",
+        "who are you", "what can you do", "help me", "help",
+    ]
+    # Exact match or starts with greeting word
+    if lower in greetings:
+        return True
+    if any(lower.startswith(g + " ") or lower == g for g in greetings):
+        return True
+    return False
+
+
+def ask_greeting(msg, history):
+    """Respond to greetings/chitchat without any data lookup."""
+    system = (
+        "You are a Jio antenna inventory assistant chatbot. "
+        "Respond warmly and briefly to greetings or chitchat. "
+        "Introduce yourself if it's the first message. "
+        "Tell the user they can: look up SAP IDs, query alarm data by state, "
+        "download blank RET reports, or ask general antenna questions. "
+        "Keep response to 2-3 lines max."
+    )
+    llm = _get_llm()
+    if llm is not None:
+        try:
+            from langchain_core.messages import SystemMessage, HumanMessage, AIMessage
+            messages = [SystemMessage(content=system)]
+            for h in history:
+                if h.get("role") == "user":
+                    messages.append(HumanMessage(content=h["content"]))
+                elif h.get("role") == "assistant":
+                    messages.append(AIMessage(content=h["content"]))
+            messages.append(HumanMessage(content=msg))
+            return llm.invoke(messages).content
+        except Exception as e:
+            print(f"LangChain greeting error: {e}")
+    return _groq_direct(system, history, msg)
+
+
 def is_general_question(msg):
     """
     Detect questions that are general knowledge / explanatory —
@@ -523,10 +567,23 @@ def lambda_handler(event, context):
         sap_id     = extract_sap_id(msg)
         state_name = extract_state_name(msg)
         blank_ret  = is_blank_ret_query(msg)
-        general_q  = is_general_question(msg)
+        greeting   = is_greeting(msg)
+        general_q  = (not greeting) and is_general_question(msg)
+
+        # ── Greeting / chitchat ────────────────────────────────────────────
+        if greeting:
+            reply = ask_greeting(msg, history)
+            h2 = (history + [
+                {"role": "user",      "content": msg},
+                {"role": "assistant", "content": reply}
+            ])[-6:]
+            return {"statusCode": 200, "body": json.dumps({
+                "summary": reply, "records": [], "columns": DISPLAY_COLUMNS,
+                "retrieved": 0, "history": h2, "download": False
+            })}
 
         # ── Blank RET download ──────────────────────────────────────────────
-        if blank_ret:
+        elif blank_ret:
             all_states_requested = bool(re.search(
                 r"all.{0,10}state|every.{0,10}state|pan.{0,5}india|all.{0,10}circle",
                 msg, re.IGNORECASE
