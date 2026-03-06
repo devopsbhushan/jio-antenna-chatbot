@@ -6,11 +6,6 @@ from datetime import datetime, timedelta
 # LangChain imported lazily inside _get_llm() to avoid Lambda crash on import error
 GROQ_URL = "https://api.groq.com/openai/v1/chat/completions"
 
-# Supported Indian regional languages
-INDIAN_LANGUAGES = {
-    "hindi", "marathi", "gujarati", "tamil", "telugu", "kannada",
-    "malayalam", "punjabi", "bengali", "odia", "assamese", "urdu",
-}
 
 BUCKET     = os.environ["BUCKET"]
 GROQ_KEY   = os.environ["GROQ_API_KEY"]
@@ -56,59 +51,10 @@ def _get_llm():
 
 def detect_and_translate(msg):
     """
-    Detect if message is in an Indian regional language.
-    If yes, translate to English using Groq (zero extra cost — same free tier).
-    Returns: (translated_msg, detected_language or None)
+    Default language: English.
+    Translation disabled — returns original message as-is.
     """
-    import ssl, json as _json
-    ctx = ssl.create_default_context()
-
-    # Quick ASCII check — pure ASCII is almost certainly English, skip API call
-    try:
-        msg.encode('ascii')
-        return msg, None   # All ASCII → English, no translation needed
-    except UnicodeEncodeError:
-        pass  # Has non-ASCII chars → likely Indian language script, proceed
-
-    prompt = (
-        "Detect the language of this text. "
-        "If it is an Indian regional language (Hindi, Marathi, Gujarati, Tamil, Telugu, "
-        "Kannada, Malayalam, Punjabi, Bengali, Odia, Assamese, Urdu), "
-        "respond with JSON: {\"language\": \"<language_name>\", \"english\": \"<english_translation>\"}. "
-        "If it is already English or unrecognised, respond with JSON: {\"language\": null, \"english\": null}. "
-        "Respond ONLY with the JSON object, nothing else.\n\n"
-        f"Text: {msg}"
-    )
-
-    payload = _json.dumps({
-        "model": "llama-3.1-8b-instant",
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 200,
-        "temperature": 0.0
-    }).encode("utf-8")
-
-    try:
-        req = urllib.request.Request(
-            GROQ_URL, data=payload,
-            headers={"Authorization": f"Bearer {GROQ_KEY}",
-                     "Content-Type": "application/json",
-                     "User-Agent": "python-urllib/3.11"},
-            method="POST"
-        )
-        with urllib.request.urlopen(req, timeout=10, context=ctx) as r:
-            raw = _json.loads(r.read())["choices"][0]["message"]["content"]
-        # Strip markdown fences if present
-        raw = re.sub(r"```[a-z]*", "", raw).strip().strip("`").strip()
-        result = _json.loads(raw)
-        lang    = result.get("language")
-        english = result.get("english")
-        if lang and english:
-            print(f"Language detected: {lang} | Translated: {english}")
-            return english, lang
-    except Exception as e:
-        print(f"Translation error (using original): {e}")
-
-    return msg, None  # Fallback: use original message
+    return msg, None
 
 COLUMNS = [
     "State","JioCenter","Cluster ID","SAP ID","ENB ID","Sector Id","Cell ID","Bands",
@@ -489,7 +435,7 @@ def ask_langchain(question, docs, history, lang=None):
         return "No matching records found in the database for this query."
 
     context = build_context(docs)
-    lang_instruction = f" Respond in {lang}." if lang else ""
+    lang_instruction = f" Respond in {lang}." if lang else " Respond in English."
     system  = (
         "You are a Jio antenna inventory assistant. "
         "Answer ONLY using the database records provided below. "
@@ -546,15 +492,16 @@ def is_greeting(msg):
     return False
 
 
-def ask_greeting(msg, history):
+def ask_greeting(msg, history, lang=None):
     """Respond to greetings/chitchat without any data lookup."""
+    lang_instruction = f" Respond in {lang}." if lang else " Respond in English."
     system = (
         "You are a Jio antenna inventory assistant chatbot. "
         "Respond warmly and briefly to greetings or chitchat. "
-        "Introduce yourself if it's the first message. "
+        "Introduce yourself if it is the first message. "
         "Tell the user they can: look up SAP IDs, query alarm data by state, "
         "download blank RET reports, or ask general antenna questions. "
-        "Keep response to 2-3 lines max."
+        "Keep response to 2-3 lines max." + lang_instruction
     )
     llm = _get_llm()
     if llm is not None:
@@ -611,7 +558,7 @@ def ask_general(question, history, lang=None):
     no FAISS needed, no S3 loads, fast response.
     Uses LangChain if available, falls back to direct Groq urllib.
     """
-    lang_instruction = f" Respond in {lang}." if lang else ""
+    lang_instruction = f" Respond in {lang}." if lang else " Respond in English."
     system = (
         "You are a Jio telecom antenna inventory expert. "
         "Answer the question clearly and concisely based on your knowledge "
@@ -683,10 +630,8 @@ def lambda_handler(event, context):
 
         # ── Greeting / chitchat ────────────────────────────────────────────
         if greeting:
-            reply = ask_greeting(msg, history)
-            # Reply in detected language if non-English
-            if detected_lang:
-                reply = f"[{detected_lang}] {reply}"
+            reply = ask_greeting(msg, history, lang=detected_lang)
+
             h2 = (history + [
                 {"role": "user",      "content": msg},
                 {"role": "assistant", "content": reply}
