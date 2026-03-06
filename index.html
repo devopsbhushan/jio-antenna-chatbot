@@ -159,7 +159,7 @@
 </div>
 
 <script>
-  const API  = 'https://4xtlidvjz53glsr3upsudddvmy0grxdu.lambda-url.ap-south-1.on.aws/';
+  const API  = 'https://x6saqrpdkcr7i4lrnvhwufjnpe0smkqv.lambda-url.ap-south-1.on.aws/';
   const COLS = [
     "State","SAP ID","Sector Id","Bands",
     "RRH Connect Board ID","RRH Connect Port ID",
@@ -342,7 +342,8 @@
         }
       }
     } catch(e){
-      rm(tid); addError('Connection error: '+e.message);
+      rm(tid);
+      addError('Connection error: ' + e.message + '<br><small style="opacity:0.8">Check: Lambda Function URL auth=NONE · CORS AllowOrigins=* · Lambda not throttled</small>');
     }
 
     busy = false;
