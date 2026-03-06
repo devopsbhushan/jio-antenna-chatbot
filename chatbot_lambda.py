@@ -201,6 +201,46 @@ def extract_state_name(msg):
             return state
     return None
 
+def is_alarm_query(msg):
+    """
+    Detect queries that want to DOWNLOAD alarm records.
+    Must have download intent + alarm keyword.
+    Excludes explain/why questions.
+    """
+    lower = msg.lower()
+    if re.search(r"\b(why|reason|explain|cause|what is|what are|how|tell me about|describe)\b", lower):
+        return False
+    download_intent = bool(re.search(
+        r"\b(show|get|download|give|list|export|fetch|find|extract|pull|share|provide)\b"
+        r"|alarm data|alarm list|alarm records|alarm report",
+        lower
+    ))
+    if not download_intent:
+        return False
+    alarm_patterns = [
+        r"\balarm\b", r"\balarms\b", r"\balert\b", r"\bfault\b",
+        r"\bvswr\b", r"\bald\b", r"\bret not calibrated\b",
+    ]
+    return any(re.search(p, lower) for p in alarm_patterns)
+
+
+def get_alarm_records(state_name):
+    """Return all records where Alarm Status=='Y' and Alarm details != '-'."""
+    sap_map = _load_state_sap(state_name)
+    results = []
+    total   = 0
+    for records in sap_map.values():
+        for r in records:
+            total += 1
+            alarm_status  = str(r.get("Alarm Status",  "")).strip()
+            alarm_details = str(r.get("Alarm details", "")).strip()
+            if alarm_status == "Y" and alarm_details != "-":
+                row = dict(r)
+                row["State"] = state_name
+                results.append(row)
+    print(f"{state_name}: {total} records checked, {len(results)} alarm matched")
+    return results
+
 
 def is_blank_ret_query(msg):
     lower = msg.lower()
@@ -564,11 +604,12 @@ def lambda_handler(event, context):
         return {"statusCode": 400, "body": json.dumps({"error": "No message"})}
 
     try:
-        sap_id     = extract_sap_id(msg)
-        state_name = extract_state_name(msg)
-        blank_ret  = is_blank_ret_query(msg)
-        greeting   = is_greeting(msg)
-        general_q  = (not greeting) and is_general_question(msg)
+        sap_id      = extract_sap_id(msg)
+        state_name  = extract_state_name(msg)
+        blank_ret   = is_blank_ret_query(msg)
+        alarm_query = (not blank_ret) and is_alarm_query(msg)
+        greeting    = is_greeting(msg)
+        general_q   = (not greeting) and is_general_question(msg)
 
         # ── Greeting / chitchat ────────────────────────────────────────────
         if greeting:
@@ -678,6 +719,95 @@ def lambda_handler(event, context):
             print(f"CSV saved: {csv_key}, {len(docs)} rows")
             return {"statusCode": 200, "body": json.dumps({
                 "summary": f"Found {len(docs):,} blank RET records for {label}. Click the link to download.",
+                "records": [], "columns": COLUMNS, "retrieved": len(docs),
+                "history": history, "download": False,
+                "presigned_url": presigned_url, "filename": filename
+            })}
+
+        # ── Alarm records download ──────────────────────────────────────────
+        elif alarm_query:
+            all_states_requested = bool(re.search(
+                r"all.{0,10}state|every.{0,10}state|pan.{0,5}india|all.{0,10}circle",
+                msg, re.IGNORECASE
+            ))
+            if all_states_requested:
+                import gc
+                code_map = _load_code_map()
+                all_state_files = sorted(set(
+                    s for v in code_map.values()
+                    for s in (v if isinstance(v, list) else [v])
+                ))
+                tmp_path   = "/tmp/alarm_all.csv"
+                total_rows = 0
+                with open(tmp_path, "w", newline="", encoding="utf-8") as f:
+                    writer = csv.DictWriter(f, fieldnames=COLUMNS, extrasaction="ignore")
+                    writer.writeheader()
+                    for state_file in all_state_files:
+                        sap_map = _load_state_sap(state_file)
+                        state_rows = 0
+                        for records in sap_map.values():
+                            for r in records:
+                                if (str(r.get("Alarm Status","")).strip() == "Y" and
+                                        str(r.get("Alarm details","")).strip() != "-"):
+                                    row = {c: r.get(c,"") for c in COLUMNS}
+                                    row["State"] = state_file
+                                    writer.writerow(row)
+                                    state_rows += 1
+                        total_rows += state_rows
+                        _sap_cache.pop(state_file, None)
+                        gc.collect()
+                        print(f"Alarm all-states: {state_file} -> {state_rows} rows | total: {total_rows:,}")
+
+                if total_rows == 0:
+                    return {"statusCode": 200, "body": json.dumps({
+                        "summary": "No alarm records found across all states.",
+                        "records": [], "columns": COLUMNS, "retrieved": 0,
+                        "history": history, "download": False
+                    })}
+                alarm_all_key = "rag-exports/Alarm_All_States.csv"
+                s3.upload_file(tmp_path, BUCKET, alarm_all_key)
+                import os; os.remove(tmp_path)
+                url = s3.generate_presigned_url(
+                    "get_object", Params={"Bucket": BUCKET, "Key": alarm_all_key}, ExpiresIn=3600)
+                print(f"Alarm all-states CSV: {total_rows:,} rows -> {alarm_all_key}")
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary": f"Alarm records for all states ready — {total_rows:,} records across {len(all_state_files)} states. Click to download.",
+                    "records": [], "columns": COLUMNS, "retrieved": total_rows,
+                    "history": history, "download": False,
+                    "presigned_url": url, "filename": "Alarm_All_States.csv"
+                })}
+
+            elif state_name:
+                docs     = get_alarm_records(state_name)
+                label    = state_name
+                filename = f"Alarm_{state_name}.csv"
+            else:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary": "Please specify a state or 'all states'. E.g. 'show alarm records for Maharashtra'",
+                    "records": [], "columns": COLUMNS, "retrieved": 0,
+                    "history": history, "download": False
+                })}
+
+            if not docs:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary": f"No alarm records found for {label}.",
+                    "records": [], "columns": COLUMNS, "retrieved": 0,
+                    "history": history, "download": False
+                })}
+
+            csv_key = f"exports/Alarm_{label}.csv"
+            buf = io.StringIO()
+            writer = csv.DictWriter(buf, fieldnames=COLUMNS, extrasaction="ignore")
+            writer.writeheader()
+            for row in docs:
+                writer.writerow({c: row.get(c, "") for c in COLUMNS})
+            s3.put_object(Bucket=BUCKET, Key=csv_key,
+                          Body=buf.getvalue().encode("utf-8"), ContentType="text/csv")
+            presigned_url = s3.generate_presigned_url(
+                "get_object", Params={"Bucket": BUCKET, "Key": csv_key}, ExpiresIn=3600)
+            print(f"Alarm CSV saved: {csv_key}, {len(docs)} rows")
+            return {"statusCode": 200, "body": json.dumps({
+                "summary": f"Found {len(docs):,} alarm records for {label}. Click the link to download.",
                 "records": [], "columns": COLUMNS, "retrieved": len(docs),
                 "history": history, "download": False,
                 "presigned_url": presigned_url, "filename": filename
