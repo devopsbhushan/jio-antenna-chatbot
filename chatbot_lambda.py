@@ -308,9 +308,7 @@ def get_blank_ret_records(state_name):
             ret_port  = str(r.get("RET Connect Port ID",  "")).strip()
             ant_class = str(r.get("Antenna Classification","")).strip()
             sample_classes.add(repr(ant_class))
-            board_blank = ret_board in ("", "-", "N/A", "null", "None", "nan", "0")
-            port_blank  = ret_port  in ("", "-", "N/A", "null", "None", "nan", "0")
-            if board_blank and port_blank and ant_class.upper() == "RET":
+            if ret_board == "-" and ret_port == "-" and ant_class.upper() == "RET":
                 row = dict(r)
                 row["State"] = resolved
                 results.append(row)
