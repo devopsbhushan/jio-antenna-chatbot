@@ -897,30 +897,13 @@ def lambda_handler(event, context):
                 {"role": "user",      "content": msg},
                 {"role": "assistant", "content": summary}
             ])[-6:]
-
-            # Write results to CSV and return presigned URL — no raw table on UI
-            label   = state_name if state_name else "search_results"
-            csv_key = f"exports/Search_{label}_{len(docs)}rows.csv"
-            buf = io.StringIO()
-            writer = csv.DictWriter(buf, fieldnames=COLUMNS, extrasaction="ignore")
-            writer.writeheader()
-            for row in docs:
-                writer.writerow({c: row.get(c, "") for c in COLUMNS})
-            s3.put_object(Bucket=BUCKET, Key=csv_key,
-                          Body=buf.getvalue().encode("utf-8"), ContentType="text/csv")
-            presigned_url = s3.generate_presigned_url(
-                "get_object", Params={"Bucket": BUCKET, "Key": csv_key}, ExpiresIn=3600)
-            print(f"Semantic CSV: {csv_key}, {len(docs)} rows")
-
             return {"statusCode": 200, "body": json.dumps({
-                "summary":      summary,
-                "records":      [],
-                "columns":      DISPLAY_COLUMNS,
-                "retrieved":    len(docs),
-                "history":      h2,
-                "download":     False,
-                "presigned_url": presigned_url,
-                "filename":     f"Search_{label}.csv"
+                "summary":   summary,
+                "records":   [],
+                "columns":   DISPLAY_COLUMNS,
+                "retrieved": len(docs),
+                "history":   h2,
+                "download":  False
             })}
 
     except Exception as e:
