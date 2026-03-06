@@ -284,7 +284,7 @@
             + '<a href="'+esc(presignedUrl)+'" target="_blank" class="dl-btn">&#11015; Download CSV ('+count+' rows)</a>'
             + '<span style="font-size:11px;color:#888;margin-left:10px">Link expires in 1 hour</span>'
             + '</div>';
-    } else {
+    } else if (records && records.length > 0) {
       const rawTbl = buildRawTable(records);
       html += '<div class="table-section">'
             + '<div class="table-bar">'
