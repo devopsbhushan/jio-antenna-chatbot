@@ -119,12 +119,12 @@ jobs:
           fi
           if [ "$PKG_TYPE" = "NOT_FOUND" ]; then
             echo "Creating ${{ env.LAMBDA_CHAT }} as Image-type..."
-            aws lambda create-function --function-name ${{ env.LAMBDA_CHAT }} --package-type Image --code ImageUri=$IMAGE_URI --role $ROLE --timeout 90 --memory-size 2048 --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }},GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}}" --no-cli-pager
+            aws lambda create-function --function-name ${{ env.LAMBDA_CHAT }} --package-type Image --code ImageUri=$IMAGE_URI --role $ROLE --timeout 300 --memory-size 3008 --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }},GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}}" --no-cli-pager
           else
             echo "Updating Image-type ${{ env.LAMBDA_CHAT }}..."
             aws lambda update-function-code --function-name ${{ env.LAMBDA_CHAT }} --image-uri $IMAGE_URI --no-cli-pager
             aws lambda wait function-updated --function-name ${{ env.LAMBDA_CHAT }}
-            aws lambda update-function-configuration --function-name ${{ env.LAMBDA_CHAT }} --timeout 90 --memory-size 2048 --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }},GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}}" --no-cli-pager
+            aws lambda update-function-configuration --function-name ${{ env.LAMBDA_CHAT }} --timeout 300 --memory-size 3008 --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }},GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}}" --no-cli-pager
           fi
           aws lambda wait function-updated --function-name ${{ env.LAMBDA_CHAT }}
           echo "${{ env.LAMBDA_CHAT }} deployed as Image-type"
