@@ -119,12 +119,12 @@ jobs:
           fi
           if [ "$PKG_TYPE" = "NOT_FOUND" ]; then
             echo "Creating ${{ env.LAMBDA_CHAT }} as Image-type..."
-            aws lambda create-function --function-name ${{ env.LAMBDA_CHAT }} --package-type Image --code ImageUri=$IMAGE_URI --role $ROLE --timeout 60 --memory-size 1024 --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }},GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}}" --no-cli-pager
+            aws lambda create-function --function-name ${{ env.LAMBDA_CHAT }} --package-type Image --code ImageUri=$IMAGE_URI --role $ROLE --timeout 90 --memory-size 2048 --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }},GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}}" --no-cli-pager
           else
             echo "Updating Image-type ${{ env.LAMBDA_CHAT }}..."
             aws lambda update-function-code --function-name ${{ env.LAMBDA_CHAT }} --image-uri $IMAGE_URI --no-cli-pager
             aws lambda wait function-updated --function-name ${{ env.LAMBDA_CHAT }}
-            aws lambda update-function-configuration --function-name ${{ env.LAMBDA_CHAT }} --timeout 60 --memory-size 1024 --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }},GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}}" --no-cli-pager
+            aws lambda update-function-configuration --function-name ${{ env.LAMBDA_CHAT }} --timeout 90 --memory-size 2048 --environment "Variables={BUCKET=${{ secrets.S3_BUCKET }},GROQ_API_KEY=${{ secrets.GROQ_API_KEY }}}" --no-cli-pager
           fi
           aws lambda wait function-updated --function-name ${{ env.LAMBDA_CHAT }}
           echo "${{ env.LAMBDA_CHAT }} deployed as Image-type"
@@ -143,12 +143,28 @@ jobs:
             aws lambda update-function-url-config               --function-name ${{ env.LAMBDA_CHAT }}               --auth-type NONE               --cors '{"AllowOrigins":["*"],"AllowMethods":["*"],"AllowHeaders":["*"],"MaxAge":300}'               --no-cli-pager
           fi
 
-          # Add resource-based policy to allow public invoke
-          aws lambda add-permission             --function-name ${{ env.LAMBDA_CHAT }}             --statement-id AllowPublicAccess             --action lambda:InvokeFunctionUrl             --principal "*"             --function-url-auth-type NONE             --no-cli-pager 2>/dev/null || true
+          # Add resource-based policy — remove old first to avoid stale config
+          aws lambda remove-permission \
+            --function-name ${{ env.LAMBDA_CHAT }} \
+            --statement-id AllowPublicAccess \
+            --no-cli-pager 2>/dev/null || true
+          aws lambda add-permission \
+            --function-name ${{ env.LAMBDA_CHAT }} \
+            --statement-id AllowPublicAccess \
+            --action lambda:InvokeFunctionUrl \
+            --principal "*" \
+            --function-url-auth-type NONE \
+            --no-cli-pager
 
           # Print the Function URL
           FURL=$(aws lambda get-function-url-config --function-name ${{ env.LAMBDA_CHAT }}             --query FunctionUrl --output text)
           echo "Function URL: $FURL"
+
+          # Auto-patch index.html with live Lambda URL and upload to S3
+          sed -i "s|const API  = '.*'|const API  = '$FURL'|g" index.html
+          aws s3 cp index.html s3://${{ secrets.S3_BUCKET }}/ui/index.html \
+            --content-type "text/html" --cache-control "no-cache" --no-cli-pager
+          echo "index.html patched with $FURL and uploaded to S3"
 
       # ── Deploy FAISS index Lambda ──────────────────────────────────────────
       - name: Deploy Build_FAISS_Index (container)
