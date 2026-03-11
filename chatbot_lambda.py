@@ -325,6 +325,89 @@ def get_state_data_15days(state_name):
     return filtered, latest_str, cutoff_str
 
 
+def extract_jc_name(msg):
+    """
+    Extract JioCenter name from message.
+    Looks for patterns like: 'JC MUMBAI', 'JioCenter Delhi', 'JC level data for Pune'
+    Returns the JC name string or None.
+    """
+    SKIP = {"level","data","report","records","all","entire","complete","full","in","for","of","the","a"}
+    patterns = [
+        r"\bjc\b.*?\bfor\s+([A-Za-z0-9_\-]+)",
+        r"\bjio\s*center\b.*?\bfor\s+([A-Za-z0-9_\-]+)",
+        r"\bjio\s*center\b.*?\bof\s+([A-Za-z0-9_\-]+)",
+        r"\bjio\s*center\s+([A-Za-z0-9_\-]+)",
+        r"\bjc\s+([A-Za-z0-9_\-]+)",
+    ]
+    for p in patterns:
+        m = re.search(p, msg, re.IGNORECASE)
+        if m:
+            name = m.group(1).strip().upper()
+            if name.lower() not in SKIP:
+                return name
+    return None
+def is_jc_data_query(msg):
+    """
+    Detect queries requesting JioCenter level data download.
+    Examples: "JC level report for Mumbai", "download JC data for Pune",
+              "JioCenter report for NAGPUR", "get JC DELHI data"
+    """
+    lower = msg.lower()
+    if re.search(r"\b(why|reason|explain|cause|what is|what are|how|tell me about|describe)\b", lower):
+        return False
+    has_jc = bool(re.search(r"\b(jc|jiocenter|jio center)\b", lower))
+    if not has_jc:
+        return False
+    download_intent = bool(re.search(
+        r"\b(show|get|download|give|list|export|fetch|find|extract|pull|share|provide|report|data|records)\b",
+        lower
+    ))
+    return download_intent
+
+
+def get_jc_data_15days(state_name, jc_name):
+    """
+    Extract records for a specific JioCenter within a state, filtered to latest 15 days.
+    Matches JioCenter column (case-insensitive partial match).
+    """
+    sap_map = _load_state_sap(state_name)
+    all_records = []
+    for records in sap_map.values():
+        for r in records:
+            jc_val = str(r.get("JioCenter", "")).strip().upper()
+            if jc_name in jc_val or jc_val in jc_name:
+                row = dict(r)
+                row["State"] = state_name
+                all_records.append(row)
+
+    print(f"JC {jc_name} in {state_name}: {len(all_records)} records matched")
+    if not all_records:
+        return [], None, None
+
+    # Apply 15-day filter
+    all_dates = [
+        parse_date(r.get("RRH Last Updated Time", ""))
+        for r in all_records
+        if parse_date(r.get("RRH Last Updated Time", ""))
+    ]
+    if not all_dates:
+        return all_records, None, None
+
+    latest_date = max(all_dates)
+    cutoff_date = latest_date - timedelta(days=15)
+    filtered = [
+        r for r in all_records
+        if parse_date(r.get("RRH Last Updated Time", "")) and
+           parse_date(r.get("RRH Last Updated Time", "")) >= cutoff_date
+    ]
+    filtered.sort(key=lambda x: (
+        x.get("SAP ID", ""),
+        int(x.get("Sector Id", 0)) if str(x.get("Sector Id", "")).isdigit() else 999
+    ))
+    print(f"JC {jc_name}: {len(all_records)} total -> {len(filtered)} within 15 days")
+    return filtered, latest_date.strftime("%Y-%m-%d"), cutoff_date.strftime("%Y-%m-%d")
+
+
 def is_blank_ret_query(msg):
     lower = msg.lower()
     if re.search(r"\b(why|reason|explain|cause|what is|what are|how|tell me about|describe)\b", lower):
@@ -697,9 +780,11 @@ def lambda_handler(event, context):
     try:
         sap_id      = extract_sap_id(msg)
         state_name  = extract_state_name(msg)
+        jc_name     = extract_jc_name(msg)
         blank_ret   = is_blank_ret_query(msg)
         alarm_query = (not blank_ret) and is_alarm_query(msg)
-        state_data  = (not blank_ret and not alarm_query) and is_state_data_query(msg) and bool(state_name)
+        jc_query    = (not blank_ret and not alarm_query) and is_jc_data_query(msg) and bool(jc_name)
+        state_data  = (not blank_ret and not alarm_query and not jc_query) and is_state_data_query(msg) and bool(state_name)
         greeting    = is_greeting(msg)
         general_q   = (not greeting) and is_general_question(msg)
 
@@ -906,6 +991,44 @@ def lambda_handler(event, context):
                 "presigned_url": presigned_url, "filename": filename
             })}
 
+        # ── JioCenter level data download (latest 15 days) ─────────────────
+        elif jc_query:
+            # JC query needs a state to know which pkl to load
+            if not state_name:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary": f"Please also mention the state for JC '{jc_name}'. "
+                               f"E.g. 'JC level report for {jc_name} Maharashtra'",
+                    "records": [], "columns": COLUMNS, "retrieved": 0,
+                    "history": history, "download": False
+                })}
+            docs, latest_str, cutoff_str = get_jc_data_15days(state_name, jc_name)
+            if not docs:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary": f"No records found for JioCenter '{jc_name}' in {state_name}. "
+                               f"Please check the JC name.",
+                    "records": [], "columns": COLUMNS, "retrieved": 0,
+                    "history": history, "download": False
+                })}
+            csv_key = f"exports/JC_{jc_name}_{state_name}_15days.csv"
+            buf = io.StringIO()
+            writer = csv.DictWriter(buf, fieldnames=COLUMNS, extrasaction="ignore")
+            writer.writeheader()
+            for row in docs:
+                writer.writerow({c: row.get(c, "") for c in COLUMNS})
+            s3.put_object(Bucket=BUCKET, Key=csv_key,
+                          Body=buf.getvalue().encode("utf-8"), ContentType="text/csv")
+            presigned_url = s3.generate_presigned_url(
+                "get_object", Params={"Bucket": BUCKET, "Key": csv_key}, ExpiresIn=3600)
+            print(f"JC CSV: {csv_key}, {len(docs)} rows")
+            return {"statusCode": 200, "body": json.dumps({
+                "summary": f"Downloaded {len(docs):,} records for JioCenter '{jc_name}' "
+                           f"in {state_name} (latest 15 days). Click to download.",
+                "records": [], "columns": COLUMNS, "retrieved": len(docs),
+                "history": history, "download": False,
+                "presigned_url": presigned_url,
+                "filename": f"JC_{jc_name}_{state_name}_15days.csv"
+            })}
+
         # ── Full state data download (latest 15 days) ──────────────────────
         elif state_data:
             docs, latest_str, cutoff_str = get_state_data_15days(state_name)
@@ -926,11 +1049,9 @@ def lambda_handler(event, context):
                           Body=buf.getvalue().encode("utf-8"), ContentType="text/csv")
             presigned_url = s3.generate_presigned_url(
                 "get_object", Params={"Bucket": BUCKET, "Key": csv_key}, ExpiresIn=3600)
-            date_range = f"{cutoff_str} to {latest_str}" if cutoff_str else "all available"
-            print(f"State data CSV: {csv_key}, {len(docs)} rows, {date_range}")
+            print(f"State data CSV: {csv_key}, {len(docs)} rows")
             return {"statusCode": 200, "body": json.dumps({
-                "summary": f"Downloaded {len(docs):,} records for {state_name} "
-                           f"(latest 15 days: {date_range}). Click to download.",
+                "summary": f"Downloaded {len(docs):,} records for {state_name} (latest 15 days). Click to download.",
                 "records": [], "columns": COLUMNS, "retrieved": len(docs),
                 "history": history, "download": False,
                 "presigned_url": presigned_url,
