@@ -84,7 +84,7 @@ STATE_CODE_MAP = {
     "AS": "ASSAM",              "JK": "JAMMU_KASHMIR",      "HP": "HIMACHAL_PRADESH",
     "UK": "UTTARAKHAND",        "CH": "CHATTISGARH",        "NE": "NORTH_EAST",
     "MN": "MANIPUR",            "TR": "TRIPURA",            "ML": "MEGHALAYA",
-    "SK": "SIKKIM",             "GA": "GOA",
+    "SK": "SIKKIM",             "GA": "GOA",               "GO": "GOA",
     "MU": "MUMBAI",             "KO": "KOLKATA",            "HY": "HYDERABAD",
     "BL": "BANGALORE",          "PU": "PUNE",               "NK": "KARNATAKA"
 }
@@ -327,15 +327,35 @@ def get_state_data_15days(state_name):
 
 def extract_jc_name(msg):
     """
-    Extract JioCenter name from message.
-    Looks for patterns like: 'JC MUMBAI', 'JioCenter Delhi', 'JC level data for Pune'
-    Returns the JC name string or None.
+    Extract JioCenter ID from message.
+    JC IDs look like: GO-PNJI-JC01-0227, MH-PUNE-JC02-0001, etc.
+    Also handles plain names like MUMBAI, PUNE after 'for'/'at'.
     """
-    SKIP = {"level","data","report","records","all","entire","complete","full","in","for","of","the","a"}
+    # Priority 1: structured JC ID pattern (XX-XXXX-JC##-####)
+    jc_id_match = re.search(
+        r"\b([A-Z]{2,3}-[A-Z0-9]{2,8}-JC\d{2}-\d{4})\b",
+        msg, re.IGNORECASE
+    )
+    if jc_id_match:
+        return jc_id_match.group(1).strip().upper()
+
+    # Priority 2: partial JC code like GO-PNJI or MH-PUNE (state-city prefix)
+    jc_prefix_match = re.search(
+        r"\b([A-Z]{2}-[A-Z]{2,6})\b",
+        msg, re.IGNORECASE
+    )
+    if jc_prefix_match:
+        val = jc_prefix_match.group(1).upper()
+        # Exclude SAP ID patterns (those have ENB in them)
+        if "ENB" not in msg.upper():
+            return val
+
+    # Priority 3: JC/JioCenter followed by a name (not a generic word)
+    SKIP = {"level","data","report","records","all","entire","complete","full",
+            "in","for","of","the","a","antenna","antennas","inventory","sites"}
     patterns = [
-        r"\bjc\b.*?\bfor\s+([A-Za-z0-9_\-]+)",
-        r"\bjio\s*center\b.*?\bfor\s+([A-Za-z0-9_\-]+)",
-        r"\bjio\s*center\b.*?\bof\s+([A-Za-z0-9_\-]+)",
+        r"\bjc\b.*?\b(?:at|for|of)\s+([A-Za-z0-9_\-]+)",
+        r"\bjio\s*center\b.*?\b(?:at|for|of)\s+([A-Za-z0-9_\-]+)",
         r"\bjio\s*center\s+([A-Za-z0-9_\-]+)",
         r"\bjc\s+([A-Za-z0-9_\-]+)",
     ]
@@ -346,6 +366,42 @@ def extract_jc_name(msg):
             if name.lower() not in SKIP:
                 return name
     return None
+
+
+def resolve_state_from_jc(jc_name):
+    """
+    Auto-detect state from JC ID prefix.
+    GO-PNJI-JC01-0227 -> state code 'GO' -> resolve to state name via code_map.
+    Returns state_name string or None.
+    """
+    if not jc_name:
+        return None
+    # Extract first segment before '-' as state code
+    parts = jc_name.split("-")
+    if len(parts) >= 1:
+        state_code = parts[0].upper()
+        states = _resolve_states(state_code)
+        if states:
+            print(f"JC '{jc_name}' -> state_code '{state_code}' -> {states[0]}")
+            return states[0]
+    return None
+
+def extract_jc_id_and_state(msg):
+    """
+    Extract structured JC ID like GO-PNJI-JC01-0227 from message.
+    Also infers state from the 2-letter prefix (e.g. GO -> GOA, MH -> MAHARASHTRA).
+    Returns (jc_id, inferred_state) or (None, None).
+    """
+    jc_id_pattern = r"\b([A-Z]{2}-[A-Z0-9]+-[A-Z0-9]+-[A-Z0-9]+)\b"
+    m = re.search(jc_id_pattern, msg.upper())
+    if m:
+        jc_id = m.group(1)
+        prefix = jc_id.split("-")[0]
+        inferred_state = STATE_CODE_MAP.get(prefix)
+        return jc_id, inferred_state
+    return None, None
+
+
 def is_jc_data_query(msg):
     """
     Detect queries requesting JioCenter level data download.
@@ -368,14 +424,20 @@ def is_jc_data_query(msg):
 def get_jc_data_15days(state_name, jc_name):
     """
     Extract records for a specific JioCenter within a state, filtered to latest 15 days.
-    Matches JioCenter column (case-insensitive partial match).
+    For structured IDs (GO-PNJI-JC01-0227): exact match on JioCenter column.
+    For plain names (MUMBAI, PUNE): partial case-insensitive match.
     """
     sap_map = _load_state_sap(state_name)
     all_records = []
+    is_structured_id = bool(re.match(r"^[A-Z]{2,3}-[A-Z0-9]", jc_name, re.IGNORECASE))
     for records in sap_map.values():
         for r in records:
             jc_val = str(r.get("JioCenter", "")).strip().upper()
-            if jc_name in jc_val or jc_val in jc_name:
+            if is_structured_id:
+                match = (jc_val == jc_name or jc_name in jc_val)
+            else:
+                match = (jc_name in jc_val or jc_val in jc_name)
+            if match:
                 row = dict(r)
                 row["State"] = state_name
                 all_records.append(row)
@@ -993,23 +1055,25 @@ def lambda_handler(event, context):
 
         # ── JioCenter level data download (latest 15 days) ─────────────────
         elif jc_query:
-            # JC query needs a state to know which pkl to load
-            if not state_name:
+            # Auto-resolve state from JC ID prefix (GO-PNJI-JC01-0227 -> GO -> GOA)
+            resolved_state = state_name or resolve_state_from_jc(jc_name)
+            if not resolved_state:
                 return {"statusCode": 200, "body": json.dumps({
-                    "summary": f"Please also mention the state for JC '{jc_name}'. "
-                               f"E.g. 'JC level report for {jc_name} Maharashtra'",
+                    "summary": f"Could not determine state for JC '{jc_name}'. "
+                               f"Please include the state name, e.g. 'JC {jc_name} Goa'.",
                     "records": [], "columns": COLUMNS, "retrieved": 0,
                     "history": history, "download": False
                 })}
-            docs, latest_str, cutoff_str = get_jc_data_15days(state_name, jc_name)
+            docs, latest_str, cutoff_str = get_jc_data_15days(resolved_state, jc_name)
             if not docs:
                 return {"statusCode": 200, "body": json.dumps({
-                    "summary": f"No records found for JioCenter '{jc_name}' in {state_name}. "
-                               f"Please check the JC name.",
+                    "summary": f"No records found for JioCenter '{jc_name}' in {resolved_state}. "
+                               f"Please verify the JC ID.",
                     "records": [], "columns": COLUMNS, "retrieved": 0,
                     "history": history, "download": False
                 })}
-            csv_key = f"exports/JC_{jc_name}_{state_name}_15days.csv"
+            safe_jc = re.sub(r"[^A-Za-z0-9_\-]", "_", jc_name)
+            csv_key = f"exports/JC_{safe_jc}_{resolved_state}_15days.csv"
             buf = io.StringIO()
             writer = csv.DictWriter(buf, fieldnames=COLUMNS, extrasaction="ignore")
             writer.writeheader()
@@ -1022,11 +1086,11 @@ def lambda_handler(event, context):
             print(f"JC CSV: {csv_key}, {len(docs)} rows")
             return {"statusCode": 200, "body": json.dumps({
                 "summary": f"Downloaded {len(docs):,} records for JioCenter '{jc_name}' "
-                           f"in {state_name} (latest 15 days). Click to download.",
+                           f"in {resolved_state} (latest 15 days). Click to download.",
                 "records": [], "columns": COLUMNS, "retrieved": len(docs),
                 "history": history, "download": False,
                 "presigned_url": presigned_url,
-                "filename": f"JC_{jc_name}_{state_name}_15days.csv"
+                "filename": f"JC_{safe_jc}_{resolved_state}_15days.csv"
             })}
 
         # ── Full state data download (latest 15 days) ──────────────────────
