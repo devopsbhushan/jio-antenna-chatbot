@@ -251,6 +251,80 @@ def get_alarm_records(state_name):
     return results
 
 
+def is_state_data_query(msg):
+    """
+    Detect queries requesting full state-level data download.
+    Examples: "download Maharashtra data", "get all data for Delhi",
+              "extract Gujarat state data", "full data for Karnataka"
+    Must NOT be blank RET or alarm query.
+    """
+    lower = msg.lower()
+    if re.search(r"\b(why|reason|explain|cause|what is|what are|how|tell me about|describe)\b", lower):
+        return False
+    # Must have download intent
+    download_intent = bool(re.search(
+        r"\b(show|get|download|give|list|export|fetch|find|extract|pull|share|provide|all data|full data|entire|complete)\b",
+        lower
+    ))
+    if not download_intent:
+        return False
+    # Must have data keyword
+    data_keyword = bool(re.search(
+        r"\b(data|records|sites|inventory|antennas|all sites|all records)\b", lower
+    ))
+    return data_keyword
+
+
+def get_state_data_15days(state_name):
+    """
+    Extract ALL records for a state filtered to latest 15 days
+    (same logic as filter_and_sort used in summary display).
+    Returns (records, latest_date_str, cutoff_date_str)
+    """
+    sap_map = _load_state_sap(state_name)
+    all_records = []
+    for records in sap_map.values():
+        for r in records:
+            row = dict(r)
+            row["State"] = state_name
+            all_records.append(row)
+
+    if not all_records:
+        return [], None, None
+
+    # Find latest RRH Last Updated Time across ALL records
+    all_dates = [
+        parse_date(r.get("RRH Last Updated Time", ""))
+        for r in all_records
+        if parse_date(r.get("RRH Last Updated Time", ""))
+    ]
+
+    if not all_dates:
+        # No dates — return all records
+        return all_records, None, None
+
+    latest_date = max(all_dates)
+    cutoff_date = latest_date - timedelta(days=15)
+
+    filtered = [
+        r for r in all_records
+        if parse_date(r.get("RRH Last Updated Time", "")) and
+           parse_date(r.get("RRH Last Updated Time", "")) >= cutoff_date
+    ]
+
+    # Sort by SAP ID then Sector Id
+    filtered.sort(key=lambda x: (
+        x.get("SAP ID", ""),
+        int(x.get("Sector Id", 0)) if str(x.get("Sector Id", "")).isdigit() else 999
+    ))
+
+    latest_str = latest_date.strftime("%Y-%m-%d")
+    cutoff_str = cutoff_date.strftime("%Y-%m-%d")
+    print(f"{state_name}: {len(all_records)} total, {len(filtered)} within 15 days "
+          f"({cutoff_str} to {latest_str})")
+    return filtered, latest_str, cutoff_str
+
+
 def is_blank_ret_query(msg):
     lower = msg.lower()
     if re.search(r"\b(why|reason|explain|cause|what is|what are|how|tell me about|describe)\b", lower):
@@ -625,6 +699,7 @@ def lambda_handler(event, context):
         state_name  = extract_state_name(msg)
         blank_ret   = is_blank_ret_query(msg)
         alarm_query = (not blank_ret) and is_alarm_query(msg)
+        state_data  = (not blank_ret and not alarm_query) and is_state_data_query(msg) and bool(state_name)
         greeting    = is_greeting(msg)
         general_q   = (not greeting) and is_general_question(msg)
 
@@ -829,6 +904,37 @@ def lambda_handler(event, context):
                 "records": [], "columns": COLUMNS, "retrieved": len(docs),
                 "history": history, "download": False,
                 "presigned_url": presigned_url, "filename": filename
+            })}
+
+        # ── Full state data download (latest 15 days) ──────────────────────
+        elif state_data:
+            docs, latest_str, cutoff_str = get_state_data_15days(state_name)
+            if not docs:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary": f"No records found for {state_name}.",
+                    "records": [], "columns": COLUMNS, "retrieved": 0,
+                    "history": history, "download": False
+                })}
+            # Write CSV to S3
+            csv_key = f"exports/StateData_{state_name}_15days.csv"
+            buf = io.StringIO()
+            writer = csv.DictWriter(buf, fieldnames=COLUMNS, extrasaction="ignore")
+            writer.writeheader()
+            for row in docs:
+                writer.writerow({c: row.get(c, "") for c in COLUMNS})
+            s3.put_object(Bucket=BUCKET, Key=csv_key,
+                          Body=buf.getvalue().encode("utf-8"), ContentType="text/csv")
+            presigned_url = s3.generate_presigned_url(
+                "get_object", Params={"Bucket": BUCKET, "Key": csv_key}, ExpiresIn=3600)
+            date_range = f"{cutoff_str} to {latest_str}" if cutoff_str else "all available"
+            print(f"State data CSV: {csv_key}, {len(docs)} rows, {date_range}")
+            return {"statusCode": 200, "body": json.dumps({
+                "summary": f"Downloaded {len(docs):,} records for {state_name} "
+                           f"(latest 15 days: {date_range}). Click to download.",
+                "records": [], "columns": COLUMNS, "retrieved": len(docs),
+                "history": history, "download": False,
+                "presigned_url": presigned_url,
+                "filename": f"StateData_{state_name}_15days.csv"
             })}
 
         # ── SAP ID lookup ───────────────────────────────────────────────────
