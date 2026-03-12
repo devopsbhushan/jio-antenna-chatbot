@@ -94,14 +94,20 @@
     .no-data { padding: 24px; text-align: center; color: #9e9e9e; font-style: italic; }
 
     /* ── Welcome ── */
-    .welcome { background: white; border-radius: 12px; padding: 18px;
+    .welcome { background: white; border-radius: 12px; padding: 20px;
                box-shadow: 0 2px 12px rgba(0,0,0,0.08); }
-    .welcome-text { font-size: 14px; color: #444; line-height: 1.6; margin-bottom: 12px; }
-    .chips { display: flex; flex-wrap: wrap; gap: 8px; }
-    .chip { background: #e8f0fe; color: #1565c0; border: 1px solid #c5d8fb;
-            border-radius: 20px; padding: 6px 14px; font-size: 12px;
-            cursor: pointer; transition: all 0.15s; user-select: none; }
-    .chip:hover { background: #1565c0; color: white; }
+    .welcome-text { font-size: 14px; color: #444; line-height: 1.6; margin-bottom: 16px; }
+    .chips { display: flex; flex-wrap: wrap; gap: 7px; }
+    .chip { background: #f0f4ff; color: #1a237e; border: 1px solid #c5cef5;
+            border-radius: 20px; padding: 6px 13px; font-size: 12.5px;
+            cursor: pointer; transition: all 0.15s; user-select: none; white-space: nowrap; }
+    .chip:hover { background: #1565c0; color: white; border-color: #1565c0; }
+    .chip.red   { background: #fff0f0; color: #b71c1c; border-color: #f5c0c0; }
+    .chip.red:hover { background: #d50000; color: white; border-color: #d50000; }
+    .chip.green { background: #f0faf2; color: #1b5e20; border-color: #b2dfb8; }
+    .chip.green:hover { background: #2e7d32; color: white; border-color: #2e7d32; }
+    .chip.amber { background: #fff8e1; color: #e65100; border-color: #ffe082; }
+    .chip.amber:hover { background: #e65100; color: white; border-color: #e65100; }
 
     .typing-card { background: white; border-radius: 12px; padding: 14px 18px;
                    box-shadow: 0 2px 12px rgba(0,0,0,0.08);
@@ -146,9 +152,14 @@
 
 <div id="chat">
   <div class="welcome">
-    <p class="welcome-text">👋 Hello! Ask me anything about Jio antenna inventory.<br>
-    Type a <strong>SAP ID</strong> for instant full record lookup, or ask a general question.</p>
-
+    <p class="welcome-text">👋 <strong>Jio Antenna Chatbot</strong> — Try a query:</p>
+    <div class="chips">
+      <span class="chip"       onclick="qa(this)">Show Antenna at SAP ID I-MH-MUMB-ENB-I001</span>
+      <span class="chip green" onclick="qa(this)">Download Antenna data for Maharashtra state</span>
+      <span class="chip green" onclick="qa(this)">JC report for GO-PNJI-JC01-0227</span>
+      <span class="chip red"   onclick="qa(this)">Alarm records for Maharashtra</span>
+      <span class="chip amber" onclick="qa(this)">Blank RET data for Maharashtra</span>
+    </div>
   </div>
 </div>
 
@@ -355,7 +366,7 @@
   function clr(){
     hist = []; lastMsg = '';
     document.getElementById('chat').innerHTML = '<div class="welcome">'
-      + '<p class="welcome-text">Chat cleared. Ask a new question!</p>'
+      + '<p class="welcome-text">Chat cleared. Type a SAP ID, state name, or ask a question to get started.</p>'
       + '</div>';
   }
 </script>
