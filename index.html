@@ -70,16 +70,16 @@
     .alarm-item{color:#f28b82;font-weight:600;padding:3px 0;display:flex;align-items:flex-start;gap:4px;line-height:1.5}
     .alarm-dot{flex-shrink:0;margin-top:2px}
     .no-alarm{color:#6fcf8e;font-style:italic;font-size:11.5px}
-    .summary-scroll{overflow-x:auto;width:100%}
+    .summary-scroll{overflow-x:auto;overflow-y:auto;width:100%;max-height:260px}
 
     /* RAW TABLE */
     .table-section{border-top:1px solid var(--border)}
     .table-bar{padding:8px 16px;background:rgba(255,255,255,0.03);display:flex;align-items:center;justify-content:space-between}
     .box-label{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:0.6px;color:var(--muted)}
     .rec-count{font-size:12px;font-weight:600;color:var(--accent)}
-    .table-scroll{overflow-x:auto;width:100%}
+    .table-scroll{overflow-x:auto;overflow-y:auto;width:100%;max-height:320px}
     table{border-collapse:collapse;font-size:12px;width:100%;min-width:1150px}
-    thead tr{background:rgba(79,156,249,0.1)}
+    thead tr{background:rgba(79,156,249,0.1)} thead th{position:sticky;top:0;z-index:1}
     thead th{color:var(--accent);padding:10px 12px;text-align:left;font-weight:600;white-space:nowrap;font-size:11.5px;border-right:1px solid var(--border)}
     thead th:last-child{border-right:none}
     tbody tr:nth-child(even){background:rgba(255,255,255,0.02)}
@@ -96,6 +96,13 @@
     /* DOWNLOAD BUTTON */
     .dl-btn{display:inline-flex;align-items:center;gap:7px;padding:8px 18px;background:transparent;color:var(--green);border:1px solid rgba(52,168,83,0.4);border-radius:20px;font-size:12.5px;font-weight:600;font-family:inherit;cursor:pointer;margin:10px 16px 12px;transition:all 0.18s;text-decoration:none}
     .dl-btn:hover{background:rgba(52,168,83,0.12);border-color:var(--green)}
+    .dl-banner{display:flex;align-items:center;justify-content:space-between;padding:14px 18px;background:rgba(52,168,83,0.08);border-bottom:1px solid rgba(52,168,83,0.2)}
+    .dl-title{font-size:14px;font-weight:600;color:#6fcf8e;margin-bottom:3px}
+    .dl-meta{font-size:12px;color:var(--muted)}
+    .dl-btn-top{padding:9px 20px;background:var(--green);color:white;border:none;border-radius:20px;font-size:13px;font-weight:600;font-family:inherit;cursor:pointer;text-decoration:none;transition:background 0.18s;white-space:nowrap}
+    .dl-btn-top:hover{background:#2d9249}
+    .dl-btn-inline{padding:4px 12px;background:transparent;color:var(--accent);border:1px solid rgba(79,156,249,0.35);border-radius:14px;font-size:11.5px;font-weight:600;font-family:inherit;cursor:pointer;margin-left:auto;transition:all 0.18s}
+    .dl-btn-inline:hover{background:rgba(79,156,249,0.12);border-color:var(--accent)}
 
     /* TYPING */
     .typing-card{background:var(--surface);border:1px solid var(--border);border-radius:16px;padding:13px 18px;display:flex;align-items:center;gap:12px;font-size:13px;color:var(--muted)}
@@ -245,21 +252,46 @@
   function addCard(msg,summary,records,count,presignedUrl,filename){
     const c=document.getElementById('chat');
     const sapId=extractSapId(msg);
-    const sumHtml=(sapId&&records&&records.length>0)?buildSectorSummary(sapId,records):buildTextSummary(summary);
-    let html='<div class="bot-card">'+sumHtml;
+    let html='<div class="bot-card">';
+
+    // ── Download button always at TOP when available ──
     if(presignedUrl){
-      html+='<div style="border-top:1px solid var(--border)">'
-        +'<a href="'+esc(presignedUrl)+'" target="_blank" class="dl-btn">⬇ Download CSV ('+count+' rows)</a>'
-        +'<span style="font-size:11px;color:var(--muted)">Link valid 1 hour</span></div>';
-    } else if(records&&records.length>0){
+      html+='<div class="dl-banner">'
+        +'<div>'
+        +'<div class="dl-title">⬇ Download Ready</div>'
+        +'<div class="dl-meta">'+count.toLocaleString()+' records · CSV · Link valid 1 hour</div>'
+        +'</div>'
+        +'<a href="'+esc(presignedUrl)+'" target="_blank" class="dl-btn-top">Download CSV</a>'
+        +'</div>';
+    }
+
+    // ── Summary / Sector table ──
+    const sumHtml=(sapId&&records&&records.length>0)?buildSectorSummary(sapId,records):buildTextSummary(summary);
+    html+=sumHtml;
+
+    // ── SAP result: show download button + raw table ──
+    if(!presignedUrl && records && records.length>0){
       html+='<div class="table-section"><div class="table-bar">'
         +'<span class="box-label">📊 Raw Data</span>'
         +'<span class="rec-count">'+count+' record'+(count!==1?'s':'')+' found</span>'
+        +'<button class="dl-btn-inline" onclick="downloadSapCsv(this,'+JSON.stringify(records)+','+JSON.stringify(filename||msg)+')" title="Download as CSV">⬇ CSV</button>'
         +'</div>'+buildRawTable(records)+'</div>';
     }
+
     html+='</div>';
     c.innerHTML+=html;
     c.scrollTop=c.scrollHeight;
+  }
+
+  function downloadSapCsv(btn, records, label){
+    if(!records||!records.length) return;
+    const cols = Object.keys(records[0]);
+    const rows = [cols.join(',')].concat(records.map(r=>cols.map(c=>'"'+(r[c]||'').toString().replace(/"/g,'""')+'"').join(',')));
+    const blob = new Blob([rows.join('\n')],{type:'text/csv'});
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href=url; a.download=(label||'antenna_data').toString().replace(/[^a-zA-Z0-9_-]/g,'_')+'.csv';
+    a.click(); URL.revokeObjectURL(url);
   }
 
   function addError(msg){
