@@ -547,11 +547,15 @@ def parse_date(val):
         return None
     for fmt in ("%Y-%m-%dT%H:%M:%S.%fZ", "%Y-%m-%dT%H:%M:%SZ",
                 "%Y-%m-%dT%H:%M:%S.%f", "%Y-%m-%dT%H:%M:%S",
-                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d"):
+                "%Y-%m-%d %H:%M:%S", "%Y-%m-%d",
+                "%d-%m-%Y %H:%M:%S", "%d-%m-%Y",
+                "%d/%m/%Y %H:%M:%S", "%d/%m/%Y",
+                "%m/%d/%Y %H:%M:%S", "%m/%d/%Y"):
         try:
             return datetime.strptime(str(val).strip(), fmt)
         except ValueError:
             continue
+    print(f"parse_date: unrecognised format '{val}'")
     return None
 
 
@@ -563,9 +567,14 @@ def filter_and_sort(results):
     if all_dates:
         latest_date = max(all_dates)
         cutoff_date = latest_date - timedelta(days=15)
+        before = len(results)
         results = [r for r in results
                    if parse_date(r.get("RRH Last Updated Time", "")) and
                       parse_date(r.get("RRH Last Updated Time", "")) >= cutoff_date]
+        print(f"filter_and_sort: {before} records, latest={latest_date.date()}, "
+              f"cutoff={cutoff_date.date()}, after_filter={len(results)}")
+    else:
+        print(f"filter_and_sort: {len(results)} records, no valid dates found — showing all")
     results.sort(key=lambda x: (
         x.get("SAP ID", ""),
         int(x.get("Sector Id", 0)) if str(x.get("Sector Id", "")).isdigit() else 999
