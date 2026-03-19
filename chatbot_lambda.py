@@ -293,6 +293,7 @@ def get_alarm_records(state_name):
                 row["State"] = state_name
                 results.append(row)
     print(f"{state_name}: {total} records checked, {len(results)} alarm matched")
+    results = apply_15day_filter(results)
     return results
 
 
@@ -582,6 +583,31 @@ def filter_and_sort(results):
     return results
 
 
+
+def apply_15day_filter(records):
+    """
+    Filter records to latest 15 days based on RRH Last Updated Time.
+    Finds the max date across all records, then keeps only those within 15 days of it.
+    If no valid dates found, returns all records unchanged.
+    """
+    if not records:
+        return records
+    all_dates = [
+        (i, parse_date(r.get("RRH Last Updated Time", "")))
+        for i, r in enumerate(records)
+    ]
+    valid = [(i, d) for i, d in all_dates if d]
+    if not valid:
+        print(f"apply_15day_filter: no valid dates in {len(records)} records — returning all")
+        return records
+    latest_date = max(d for _, d in valid)
+    cutoff_date = latest_date - timedelta(days=15)
+    filtered = [records[i] for i, d in valid if d >= cutoff_date]
+    print(f"apply_15day_filter: {len(records)} -> {len(filtered)} records "
+          f"(latest={latest_date.date()}, cutoff={cutoff_date.date()})")
+    return filtered
+
+
 # ════════════════════════════════════════════════════════════
 #  SAP LOOKUP
 # ════════════════════════════════════════════════════════════
@@ -641,6 +667,7 @@ def get_blank_ret_records(state_name):
                 results.append(row)
     print(f"{resolved}: {total} records checked, {len(results)} matched")
     print(f"ALL Antenna Classification values: {sorted(sample_classes)}")
+    results = apply_15day_filter(results)
     return results
 
 
@@ -949,7 +976,7 @@ def lambda_handler(event, context):
                     for state_file in all_state_files:
                         # Load, filter, write, then CLEAR from cache immediately
                         sap_map = _load_state_sap(state_file)
-                        state_rows = 0
+                        state_records = []
                         for records in sap_map.values():
                             for r in records:
                                 ret_board = str(r.get("RET Connect Board ID","")).strip()
@@ -958,13 +985,17 @@ def lambda_handler(event, context):
                                 if ret_board == "-" and ret_port == "-" and ant_class.upper() == "RET":
                                     row = {c: r.get(c,"") for c in COLUMNS}
                                     row["State"] = state_file
-                                    writer.writerow(row)
-                                    state_rows += 1
+                                    state_records.append(row)
+                        # Apply 15-day filter per state
+                        state_records = apply_15day_filter(state_records)
+                        for row in state_records:
+                            writer.writerow(row)
+                        state_rows = len(state_records)
                         total_rows += state_rows
                         # Critical: evict from cache to free memory
                         _sap_cache.pop(state_file, None)
                         gc.collect()
-                        print(f"All-states: {state_file} -> {state_rows} rows | total so far: {total_rows:,}")
+                        print(f"All-states blank RET: {state_file} -> {state_rows} rows (15d) | total: {total_rows:,}")
 
                 if total_rows == 0:
                     return {"statusCode": 200, "body": json.dumps({
@@ -1046,19 +1077,23 @@ def lambda_handler(event, context):
                     writer.writeheader()
                     for state_file in all_state_files:
                         sap_map = _load_state_sap(state_file)
-                        state_rows = 0
+                        state_records = []
                         for records in sap_map.values():
                             for r in records:
                                 if (str(r.get("Alarm Status","")).strip() == "Y" and
                                         str(r.get("Alarm details","")).strip() != "-"):
                                     row = {c: r.get(c,"") for c in COLUMNS}
                                     row["State"] = state_file
-                                    writer.writerow(row)
-                                    state_rows += 1
+                                    state_records.append(row)
+                        # Apply 15-day filter per state
+                        state_records = apply_15day_filter(state_records)
+                        for row in state_records:
+                            writer.writerow(row)
+                        state_rows = len(state_records)
                         total_rows += state_rows
                         _sap_cache.pop(state_file, None)
                         gc.collect()
-                        print(f"Alarm all-states: {state_file} -> {state_rows} rows | total: {total_rows:,}")
+                        print(f"Alarm all-states: {state_file} -> {state_rows} rows (15d) | total: {total_rows:,}")
 
                 if total_rows == 0:
                     return {"statusCode": 200, "body": json.dumps({
