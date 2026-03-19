@@ -218,7 +218,7 @@
     /* ── INPUT BAR ── */
     .bar{
       flex-shrink:0;
-      height:70px;
+      height:140px;
       background:var(--surface);
       border-top:1px solid var(--border);
       padding:0 16px;
@@ -230,16 +230,16 @@
       transition:border-color .2s,box-shadow .2s;
       box-shadow:0 0 0 0 rgba(91,156,246,0);}
     .inpw:focus-within{border-color:var(--accent);box-shadow:0 0 0 3px rgba(91,156,246,0.25);}
-    #inp{flex:1;background:transparent;border:none;outline:none;font-size:14px;
+    #inp{flex:1;background:transparent;border:none;outline:none;font-size:18px;
       color:var(--text);font-family:inherit;padding:11px 4px;caret-color:#5b9cf6;}
     #inp::placeholder{color:var(--muted)}
-    #sendBtn{width:39px;height:39px;background:var(--jio);color:#fff;border:none;
-      border-radius:50%;font-size:16px;cursor:pointer;display:flex;align-items:center;
+    #sendBtn{width:56px;height:56px;background:var(--jio);color:#fff;border:none;
+      border-radius:50%;font-size:22px;cursor:pointer;display:flex;align-items:center;
       justify-content:center;transition:background .2s,transform .1s;flex-shrink:0}
     #sendBtn:hover{background:#1a5dc8;transform:scale(1.05)}
     #sendBtn:active{transform:scale(.95)}
-    #clearBtn{padding:8px 14px;background:transparent;color:var(--muted);
-      border:1px solid var(--border);border-radius:18px;font-size:13px;
+    #clearBtn{padding:12px 20px;background:transparent;color:var(--muted);
+      border:1px solid var(--border);border-radius:24px;font-size:15px;
       font-family:inherit;cursor:pointer;transition:all .15s;white-space:nowrap}
     #clearBtn:hover{background:#252836;color:var(--text)}
     .errc{background:#fce8e6;border:1px solid #f5c6c3;border-radius:12px;
@@ -269,7 +269,7 @@
         <div class="wg">Hi there 👋<br>Where should we start?</div>
         <div class="ws">Search antenna inventory, download reports, check alarms and RET status across Jio circles.</div>
         <div class="chips">
-          <span class="chip"  onclick="qa(this)">Show Antenna at SAP ID I-MH-MUMB-ENB-I001</span>
+          <span class="chip"  onclick="qa(this)">Show Antenna at SAP ID I-MH-PNVL-ENB-G001</span>
           <span class="chip g" onclick="qa(this)">Download Antenna data for Maharashtra state</span>
           <span class="chip g" onclick="qa(this)">JC report for GO-PNJI-JC01-0227</span>
           <span class="chip r" onclick="qa(this)">Alarm records for Maharashtra</span>
@@ -472,7 +472,7 @@
       +'<div class="wg">Hi there 👋<br>Where should we start?</div>'
       +'<div class="ws">Search antenna inventory, download reports, check alarms and RET status across Jio circles.</div>'
       +'<div class="chips">'
-      +'<span class="chip" onclick="qa(this)">Show Antenna at SAP ID I-MH-MUMB-ENB-I001</span>'
+      +'<span class="chip" onclick="qa(this)">Show Antenna at SAP ID I-MH-PNVL-ENB-G001</span>'
       +'<span class="chip g" onclick="qa(this)">Download Antenna data for Maharashtra state</span>'
       +'<span class="chip g" onclick="qa(this)">JC report for GO-PNJI-JC01-0227</span>'
       +'<span class="chip r" onclick="qa(this)">Alarm records for Maharashtra</span>'
