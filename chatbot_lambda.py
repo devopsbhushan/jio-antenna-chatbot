@@ -19,6 +19,51 @@ _idf       = None
 _meta      = None
 _sap_cache = {}
 
+# ETag tracking — detects when S3 files are rebuilt (new upload changes ETag)
+_etag_faiss    = None   # tracks rag-index/faiss.index
+_etag_meta     = None   # tracks rag-index/metadata.pkl
+_etag_code_map = None   # tracks rag-index/sap/code_map.json
+
+
+def _s3_etag(key):
+    """Fetch current ETag of an S3 object cheaply (HEAD only, no download)."""
+    try:
+        return s3.head_object(Bucket=BUCKET, Key=key)["ETag"]
+    except Exception:
+        return None
+
+
+def _check_and_invalidate_cache():
+    """
+    Compare current S3 ETags against cached ETags.
+    If faiss.index or metadata.pkl changed → clear ALL caches so fresh data loads.
+    Called once per Lambda invocation — HEAD requests are ~1ms, negligible cost.
+    """
+    global _index, _idf, _meta, _sap_cache, _code_map_cache
+    global _etag_faiss, _etag_meta, _etag_code_map
+
+    current_faiss = _s3_etag("rag-index/faiss.index")
+    current_meta  = _s3_etag("rag-index/metadata.pkl")
+    current_cmap  = _s3_etag(f"{SAP_PREFIX}code_map.json")
+
+    if (current_faiss != _etag_faiss or
+        current_meta  != _etag_meta  or
+        current_cmap  != _etag_code_map):
+
+        print(f"Cache invalidated — new data detected. "
+              f"faiss={current_faiss!r}, meta={current_meta!r}, cmap={current_cmap!r}")
+        # Clear everything so next load pulls fresh files from S3
+        _index         = None
+        _idf           = None
+        _meta          = None
+        _sap_cache     = {}
+        _code_map_cache= {}
+        _etag_faiss    = current_faiss
+        _etag_meta     = current_meta
+        _etag_code_map = current_cmap
+    else:
+        print("Cache valid — no S3 changes detected")
+
 # ── LangChain LLM — lazy import so Lambda doesn't crash if package missing ──
 _llm          = None
 _langchain_ok = None   # None=untested, True=working, False=failed
@@ -476,7 +521,7 @@ def is_blank_ret_query(msg):
         return False
     download_intent = bool(re.search(
         r"\b(show|get|download|give|list|export|fetch|find|extract|pull|share|provide)\b"
-        r"|blank ret data|missing ret data|empty ret data", lower
+        r"|blank ret|missing ret|empty ret|bank ret|bland ret|blnk ret|ret data", lower
     ))
     if not download_intent:
         return False
@@ -484,6 +529,11 @@ def is_blank_ret_query(msg):
         r"blank.{0,15}ret", r"missing.{0,15}ret", r"empty.{0,15}ret",
         r"ret.{0,15}blank",  r"ret.{0,15}missing", r"ret.{0,15}not.{0,15}filled",
         r"no.{0,10}ret.{0,10}data",
+        # common typos / voice recognition variants
+        r"bank.{0,15}ret",   r"bland.{0,15}ret",   r"blnk.{0,15}ret",
+        r"ret.{0,15}bank",   r"ret.{0,15}not.{0,15}config",
+        r"unconfigured.{0,10}ret", r"ret.{0,15}unconfigured",
+        r"ret.{0,15}empty",  r"ret.{0,15}null",
     ]
     return any(re.search(p, lower) for p in ret_patterns)
 
@@ -819,6 +869,9 @@ def lambda_handler(event, context):
     method = event.get("requestContext", {}).get("http", {}).get("method", "")
     if method == "OPTIONS":
         return {"statusCode": 200, "body": ""}
+
+    # Check S3 ETags — auto-invalidate cache if data was rebuilt
+    _check_and_invalidate_cache()
 
     try:
         body = json.loads(event.get("body") or "{}")
