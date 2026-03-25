@@ -22,8 +22,63 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # ── Install Gradle 8.4 and generate wrapper ──────────────────────────
-      - name: Setup Gradle
+      # ── Generate app icons (Jio red with antenna emoji) ──────────────────
+      - name: Generate app icons
+        run: |
+          pip install Pillow --quiet
+
+          python3 << 'PYEOF'
+          from PIL import Image, ImageDraw, ImageFont
+          import os
+
+          sizes = {
+              "mipmap-mdpi":    48,
+              "mipmap-hdpi":    72,
+              "mipmap-xhdpi":   96,
+              "mipmap-xxhdpi":  144,
+              "mipmap-xxxhdpi": 192,
+          }
+
+          base = "android/app/src/main/res"
+
+          for folder, size in sizes.items():
+              os.makedirs(f"{base}/{folder}", exist_ok=True)
+
+              # Square icon (ic_launcher)
+              img = Image.new("RGB", (size, size), color=(213, 0, 0))  # Jio red
+              draw = ImageDraw.Draw(img)
+              # Draw white circle in center
+              margin = size // 6
+              draw.ellipse([margin, margin, size - margin, size - margin],
+                           fill=(255, 255, 255))
+              # Draw red antenna symbol (simplified)
+              cx, cy = size // 2, size // 2
+              r = size // 5
+              draw.arc([cx-r, cy-r, cx+r, cy+r], start=210, end=330,
+                       fill=(213, 0, 0), width=max(2, size//20))
+              outer = size // 3
+              draw.arc([cx-outer, cy-outer, cx+outer, cy+outer], start=210, end=330,
+                       fill=(213, 0, 0), width=max(2, size//20))
+              draw.line([cx, cy, cx, cy + r + size//10],
+                        fill=(213, 0, 0), width=max(2, size//20))
+
+              img.save(f"{base}/{folder}/ic_launcher.png")
+
+              # Round icon (ic_launcher_round) — circle crop
+              img_round = Image.new("RGBA", (size, size), (0, 0, 0, 0))
+              mask = Image.new("L", (size, size), 0)
+              mask_draw = ImageDraw.Draw(mask)
+              mask_draw.ellipse([0, 0, size, size], fill=255)
+              img_round.paste(img, mask=mask)
+              img_round.save(f"{base}/{folder}/ic_launcher_round.png")
+
+              print(f"Generated {folder}: {size}x{size}px")
+
+          print("All icons generated successfully")
+          PYEOF
+
+      # ── Setup Gradle ──────────────────────────────────────────────────────
+      - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
           gradle-version: '8.4'
@@ -33,11 +88,10 @@ jobs:
           cd android
           gradle wrapper --gradle-version 8.4 --distribution-type bin
           chmod +x gradlew
-          echo "Gradle wrapper generated"
-          ls -la gradlew
+          echo "Gradle wrapper ready"
 
-      # ── Cache Gradle dependencies ─────────────────────────────────────────
-      - name: Cache Gradle packages
+      # ── Cache ─────────────────────────────────────────────────────────────
+      - name: Cache Gradle
         uses: actions/cache@v4
         with:
           path: |
@@ -46,7 +100,7 @@ jobs:
           key: gradle-${{ hashFiles('android/**/*.gradle*', 'android/gradle.properties') }}
           restore-keys: gradle-
 
-      # ── Inject S3 URL if secret is set ───────────────────────────────────
+      # ── Inject S3 URL ─────────────────────────────────────────────────────
       - name: Inject Chatbot URL
         run: |
           if [ -n "${{ secrets.CHATBOT_URL }}" ]; then
@@ -54,31 +108,31 @@ jobs:
               android/app/src/main/java/com/jio/antennachatbot/MainActivity.kt
             echo "URL injected: ${{ secrets.CHATBOT_URL }}"
           else
-            echo "No CHATBOT_URL secret — using hardcoded URL in MainActivity.kt"
+            echo "Using hardcoded URL in MainActivity.kt"
           fi
 
-      # ── Build debug APK (simpler, no signing config needed) ──────────────
+      # ── Build APK ─────────────────────────────────────────────────────────
       - name: Build APK
         run: |
           cd android
           ./gradlew assembleDebug --no-daemon --stacktrace 2>&1
-          echo "--- Build output ---"
+          echo "--- APK output ---"
           find . -name "*.apk" 2>/dev/null
-          ls -lh app/build/outputs/apk/debug/ 2>/dev/null || echo "No debug APK found"
+          ls -lh app/build/outputs/apk/debug/ 2>/dev/null
 
       # ── Rename APK ────────────────────────────────────────────────────────
       - name: Rename APK
         run: |
           DATE=$(date +%Y%m%d)
-          APK_SRC="android/app/build/outputs/apk/debug/app-debug.apk"
-          APK_DST="android/app/build/outputs/apk/debug/JioAntennaChatbot_v1_${DATE}.apk"
-          cp "$APK_SRC" "$APK_DST"
+          SRC="android/app/build/outputs/apk/debug/app-debug.apk"
+          DST="android/app/build/outputs/apk/debug/JioAntennaChatbot_v1_${DATE}.apk"
+          cp "$SRC" "$DST"
           echo "APK_NAME=JioAntennaChatbot_v1_${DATE}.apk" >> $GITHUB_ENV
-          echo "APK_PATH=$APK_DST" >> $GITHUB_ENV
-          ls -lh "$APK_DST"
+          echo "APK_PATH=$DST" >> $GITHUB_ENV
+          ls -lh "$DST"
 
-      # ── Upload APK artifact ───────────────────────────────────────────────
-      - name: Upload APK artifact
+      # ── Upload artifact ───────────────────────────────────────────────────
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.APK_NAME }}
@@ -88,14 +142,12 @@ jobs:
       - name: Summary
         run: |
           echo "========================================"
-          echo "APK BUILD COMPLETE ✅"
+          echo "✅ APK BUILD COMPLETE"
           echo "File: ${{ env.APK_NAME }}"
+          echo "Download: GitHub → Actions → this run → Artifacts"
           echo ""
-          echo "Download:"
-          echo "  GitHub → Actions → this run → Artifacts"
-          echo ""
-          echo "Install on Android:"
-          echo "  1. Send APK to phone via WhatsApp/email"
+          echo "Install:"
+          echo "  1. Send APK to phone (WhatsApp/email)"
           echo "  2. Settings → Install unknown apps → Allow"
           echo "  3. Tap APK → Install"
           echo "========================================"
