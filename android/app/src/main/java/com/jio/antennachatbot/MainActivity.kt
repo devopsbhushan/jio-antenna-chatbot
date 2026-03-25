@@ -15,7 +15,7 @@ class MainActivity : Activity() {
     private lateinit var progressBar: ProgressBar
 
     // ── PUT YOUR LAMBDA / S3 URL HERE ──────────────────────────────────────
-    private val CHATBOT_URL = "https://your-bucket.s3.ap-south-1.amazonaws.com/ui/index.html"
+    private val CHATBOT_URL = "https://chatbot-input-database.s3.ap-south-1.amazonaws.com/ui/index.html"
     // ───────────────────────────────────────────────────────────────────────
 
     @SuppressLint("SetJavaScriptEnabled")
