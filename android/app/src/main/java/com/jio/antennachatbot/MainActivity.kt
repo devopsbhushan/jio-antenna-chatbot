@@ -1,22 +1,21 @@
 package com.jio.antennachatbot
 
 import android.annotation.SuppressLint
-import android.app.Activity
 import android.os.Bundle
 import android.view.KeyEvent
 import android.webkit.*
 import android.widget.ProgressBar
 import android.widget.RelativeLayout
 import android.graphics.Color
+import androidx.appcompat.app.AppCompatActivity
 
-class MainActivity : Activity() {
+class MainActivity : AppCompatActivity() {
 
     private lateinit var webView: WebView
     private lateinit var progressBar: ProgressBar
 
-    // ── PUT YOUR LAMBDA / S3 URL HERE ──────────────────────────────────────
-    private val CHATBOT_URL = "https://chatbot-input-database.s3.ap-south-1.amazonaws.com/ui/index.html"
-    // ───────────────────────────────────────────────────────────────────────
+    private val CHATBOT_URL =
+        "https://chatbot-input-database.s3.ap-south-1.amazonaws.com/ui/index.html"
 
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -26,7 +25,7 @@ class MainActivity : Activity() {
         val layout = RelativeLayout(this)
         layout.setBackgroundColor(Color.WHITE)
 
-        // Progress bar shown while page loads
+        // Progress bar
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
         progressBar.id = android.R.id.progress
         progressBar.max = 100
@@ -46,6 +45,7 @@ class MainActivity : Activity() {
         webView.layoutParams = wvParams
 
         // Settings
+        @Suppress("DEPRECATION")
         webView.settings.apply {
             javaScriptEnabled        = true
             domStorageEnabled        = true
@@ -57,19 +57,19 @@ class MainActivity : Activity() {
             setSupportZoom(false)
             mixedContentMode         = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             cacheMode                = WebSettings.LOAD_DEFAULT
-            userAgentString          = userAgentString + " JioAntennaChatbot/1.0"
         }
 
-        // Show/hide progress bar on page load
+        // Progress bar updates
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView, newProgress: Int) {
                 progressBar.progress = newProgress
-                progressBar.visibility = if (newProgress < 100)
-                    android.view.View.VISIBLE else android.view.View.GONE
+                progressBar.visibility =
+                    if (newProgress < 100) android.view.View.VISIBLE
+                    else android.view.View.GONE
             }
         }
 
-        // Handle navigation within app (don't open external browser)
+        // Stay in-app — don't open external browser
         webView.webViewClient = object : WebViewClient() {
             override fun shouldOverrideUrlLoading(
                 view: WebView, request: WebResourceRequest
@@ -81,28 +81,29 @@ class MainActivity : Activity() {
             override fun onReceivedError(
                 view: WebView, request: WebResourceRequest, error: WebResourceError
             ) {
-                // Show friendly offline message
-                view.loadData(
-                    """
-                    <html><body style="font-family:sans-serif;text-align:center;padding:40px;color:#555">
-                    <h2>📡 Connection Error</h2>
-                    <p>Unable to reach the chatbot server.<br>Please check your internet connection.</p>
-                    <button onclick="location.reload()"
-                      style="padding:12px 28px;background:#d50000;color:white;
-                             border:none;border-radius:24px;font-size:16px;margin-top:16px">
-                      Retry
-                    </button>
-                    </body></html>
-                    """.trimIndent(),
-                    "text/html", "UTF-8"
-                )
+                if (request.isForMainFrame) {
+                    view.loadData(
+                        """
+                        <html><body style="font-family:sans-serif;text-align:center;
+                          padding:40px;color:#555;background:#fff">
+                        <h2 style="color:#d50000">📡 Connection Error</h2>
+                        <p>Unable to reach the chatbot.<br>
+                        Please check your internet connection.</p>
+                        <button onclick="location.reload()"
+                          style="padding:12px 28px;background:#d50000;color:white;
+                                 border:none;border-radius:24px;font-size:16px;
+                                 margin-top:16px;cursor:pointer">
+                          Retry
+                        </button></body></html>
+                        """.trimIndent(),
+                        "text/html", "UTF-8"
+                    )
+                }
             }
         }
 
         layout.addView(webView)
         setContentView(layout)
-
-        // Load chatbot URL
         webView.loadUrl(CHATBOT_URL)
     }
 
@@ -115,7 +116,6 @@ class MainActivity : Activity() {
         return super.onKeyDown(keyCode, event)
     }
 
-    // Pause/resume WebView with activity lifecycle
     override fun onPause()  { super.onPause();  webView.onPause()  }
     override fun onResume() { super.onResume(); webView.onResume() }
 }
