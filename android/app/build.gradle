@@ -9,7 +9,7 @@ android {
 
     defaultConfig {
         applicationId  "com.jio.antennachatbot"
-        minSdk         21          // Android 5.0+ (covers ~99% of devices)
+        minSdk         21
         targetSdk      34
         versionCode    1
         versionName    "1.0.0"
@@ -17,21 +17,26 @@ android {
 
     buildTypes {
         release {
-            minifyEnabled   false
-            signingConfig   signingConfigs.debug   // debug-signed for sideloading
+            minifyEnabled  false
+            // Use debug keystore for sideloading — no signing setup needed
+            signingConfig  signingConfigs.debug
+        }
+        debug {
+            minifyEnabled  false
         }
     }
 
     compileOptions {
-        sourceCompatibility JavaVersion.VERSION_1_8
-        targetCompatibility JavaVersion.VERSION_1_8
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
     }
 
     kotlinOptions {
-        jvmTarget = '1.8'
+        jvmTarget = '17'
     }
 }
 
 dependencies {
     implementation 'androidx.core:core-ktx:1.12.0'
+    implementation 'androidx.appcompat:appcompat:1.6.1'
 }
