@@ -1,0 +1,96 @@
+name: Build Android APK
+
+on:
+  workflow_dispatch:        # Manual trigger — run whenever you want a new APK
+  push:
+    paths:
+      - 'android/**'        # Auto-trigger when android/ files change
+
+jobs:
+  build-apk:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    steps:
+
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # ── Java 17 required for Android Gradle Plugin 8.x ──────────────────
+      - name: Set up JDK 17
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # ── Cache Gradle to speed up future builds (~2 min saved) ────────────
+      - name: Cache Gradle packages
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+          key: gradle-${{ hashFiles('android/**/*.gradle*', 'android/gradle.properties') }}
+          restore-keys: gradle-
+
+      # ── Make gradlew executable ───────────────────────────────────────────
+      - name: Setup Gradle wrapper
+        run: |
+          cd android
+          # Download gradle wrapper if not present
+          if [ ! -f "gradlew" ]; then
+            gradle wrapper --gradle-version 8.4
+          fi
+          chmod +x gradlew
+
+      # ── Inject live Lambda URL into MainActivity.kt ───────────────────────
+      # Store your S3 URL as a GitHub secret: CHATBOT_URL
+      - name: Inject Chatbot URL
+        run: |
+          if [ -n "${{ secrets.CHATBOT_URL }}" ]; then
+            sed -i 's|https://chatbot-input-database.s3.ap-south-1.amazonaws.com/ui/index.html|${{ secrets.CHATBOT_URL }}|g' \
+              android/app/src/main/java/com/jio/antennachatbot/MainActivity.kt
+            echo "URL injected from secret"
+          else
+            echo "CHATBOT_URL secret not set — using placeholder URL"
+          fi
+
+      # ── Build release APK ─────────────────────────────────────────────────
+      - name: Build APK
+        run: |
+          cd android
+          ./gradlew assembleRelease --no-daemon --stacktrace
+          echo "Build complete"
+          ls -lh app/build/outputs/apk/release/
+
+      # ── Rename APK with version and date ─────────────────────────────────
+      - name: Rename APK
+        run: |
+          DATE=$(date +%Y%m%d)
+          cp android/app/build/outputs/apk/release/app-release.apk \
+             android/app/build/outputs/apk/release/JioAntennaChatbot_v1_${DATE}.apk
+          echo "APK_NAME=JioAntennaChatbot_v1_${DATE}.apk" >> $GITHUB_ENV
+
+      # ── Upload APK as downloadable artifact ──────────────────────────────
+      - name: Upload APK artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.APK_NAME }}
+          path: android/app/build/outputs/apk/release/${{ env.APK_NAME }}
+          retention-days: 30      # APK available for 30 days
+
+      # ── Print summary ─────────────────────────────────────────────────────
+      - name: Summary
+        run: |
+          echo "========================================"
+          echo "APK BUILD COMPLETE"
+          echo "File: ${{ env.APK_NAME }}"
+          echo ""
+          echo "Download from:"
+          echo "  GitHub → Actions → this run → Artifacts"
+          echo ""
+          echo "Install on Android:"
+          echo "  1. Transfer APK to phone (WhatsApp/email/USB)"
+          echo "  2. Settings → Install unknown apps → Allow"
+          echo "  3. Tap APK file → Install"
+          echo "========================================"
