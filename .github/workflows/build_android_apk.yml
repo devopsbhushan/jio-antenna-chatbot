@@ -5,6 +5,7 @@ on:
   push:
     paths:
       - 'android/**'
+      - 'generate_icons.py'
 
 jobs:
   build-apk:
@@ -22,92 +23,11 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
-      # ── Generate app icons (chatbot icon) ────────────────────────────────
       - name: Generate app icons
         run: |
-          pip install Pillow --break-system-packages --quiet 2>/dev/null || \
-          pip install Pillow --quiet || \
-          pip3 install Pillow --quiet
-          echo "Pillow ready"
+          pip install Pillow --break-system-packages -q 2>/dev/null || pip install Pillow -q
+          python3 generate_icons.py
 
-          python3 << 'PYEOF'
-from PIL import Image, ImageDraw
-import os
-
-sizes = {
-    "mipmap-mdpi":    48,
-    "mipmap-hdpi":    72,
-    "mipmap-xhdpi":   96,
-    "mipmap-xxhdpi":  144,
-    "mipmap-xxxhdpi": 192,
-}
-
-base = "android/app/src/main/res"
-
-def draw_chatbot_icon(size):
-    img = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    p = size // 12
-
-    # Background — Jio blue
-    draw.rounded_rectangle([0, 0, size, size], radius=size//5,
-                           fill=(26, 115, 232))
-
-    # White chat bubble
-    bx1 = p * 2
-    by1 = int(size * 0.18)
-    bx2 = size - p * 2
-    by2 = int(size * 0.65)
-    r_bub = size // 8
-    draw.rounded_rectangle([bx1, by1, bx2, by2], radius=r_bub, fill=(255, 255, 255))
-
-    # Bubble tail (triangle bottom-left)
-    tx = bx1 + size // 8
-    draw.polygon([
-        (tx, by2),
-        (tx - size//9, by2 + size//7),
-        (tx + size//8, by2)
-    ], fill=(255, 255, 255))
-
-    # Three dots inside bubble
-    dot_r = max(2, size // 18)
-    cy_dot = (by1 + by2) // 2
-    spacing = (bx2 - bx1) // 4
-    for i in range(3):
-        cx_dot = bx1 + spacing * (i + 1)
-        draw.ellipse([cx_dot - dot_r, cy_dot - dot_r,
-                      cx_dot + dot_r, cy_dot + dot_r],
-                     fill=(26, 115, 232))
-
-    # Red accent bar at bottom
-    bar_h = max(4, size // 10)
-    draw.rounded_rectangle([p*2, size - p - bar_h, size - p*2, size - p],
-                           radius=bar_h//2, fill=(213, 0, 0))
-    return img
-
-for folder, size in sizes.items():
-    os.makedirs(f"{base}/{folder}", exist_ok=True)
-    img = draw_chatbot_icon(size)
-
-    # Square icon
-    sq = Image.new("RGB", (size, size), (26, 115, 232))
-    sq.paste(img, mask=img.split()[3])
-    sq.save(f"{base}/{folder}/ic_launcher.png")
-
-    # Round icon — circle crop
-    rnd = Image.new("RGBA", (size, size), (0, 0, 0, 0))
-    mask = Image.new("L", (size, size), 0)
-    ImageDraw.Draw(mask).ellipse([0, 0, size, size], fill=255)
-    rnd.paste(img, mask=mask)
-    rnd.save(f"{base}/{folder}/ic_launcher_round.png")
-
-    print(f"Generated {folder}: {size}x{size}px")
-
-print("Chatbot icons generated successfully")
-PYEOF
-          echo "Icon step complete"
-
-      # ── Setup Gradle ──────────────────────────────────────────────────────
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v3
         with:
@@ -120,7 +40,6 @@ PYEOF
           chmod +x gradlew
           echo "Gradle wrapper ready"
 
-      # ── Cache ─────────────────────────────────────────────────────────────
       - name: Cache Gradle
         uses: actions/cache@v4
         with:
@@ -130,24 +49,23 @@ PYEOF
           key: gradle-${{ hashFiles('android/**/*.gradle*', 'android/gradle.properties') }}
           restore-keys: gradle-
 
-      # ── Copy latest index.html into APK assets ───────────────────────────
-      - name: Bundle index.html into APK
+      - name: Inject Chatbot URL
         run: |
-          mkdir -p android/app/src/main/assets
-          cp index.html android/app/src/main/assets/index.html
-          echo "Bundled index.html ($(wc -c < index.html) bytes) into APK assets"
-          # No S3 dependency — UI runs from inside the APK itself
+          if [ -n "${{ secrets.CHATBOT_URL }}" ]; then
+            sed -i 's|https://chatbot-input-database.s3.ap-south-1.amazonaws.com/ui/index.html|${{ secrets.CHATBOT_URL }}|g' \
+              android/app/src/main/java/com/jio/antennachatbot/MainActivity.kt
+            echo "URL injected"
+          else
+            echo "Using hardcoded URL in MainActivity.kt"
+          fi
 
-      # ── Build APK ─────────────────────────────────────────────────────────
       - name: Build APK
         run: |
           cd android
-          ./gradlew assembleDebug --no-daemon --stacktrace 2>&1
-          echo "--- APK output ---"
+          ./gradlew assembleDebug --no-daemon 2>&1
           find . -name "*.apk" 2>/dev/null
           ls -lh app/build/outputs/apk/debug/ 2>/dev/null
 
-      # ── Rename APK ────────────────────────────────────────────────────────
       - name: Rename APK
         run: |
           DATE=$(date +%Y%m%d)
@@ -158,7 +76,6 @@ PYEOF
           echo "APK_PATH=$DST" >> $GITHUB_ENV
           ls -lh "$DST"
 
-      # ── Upload artifact ───────────────────────────────────────────────────
       - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
@@ -169,12 +86,8 @@ PYEOF
       - name: Summary
         run: |
           echo "========================================"
-          echo "✅ APK BUILD COMPLETE"
+          echo "APK BUILD COMPLETE"
           echo "File: ${{ env.APK_NAME }}"
-          echo "Download: GitHub → Actions → this run → Artifacts"
-          echo ""
-          echo "Install:"
-          echo "  1. Send APK to phone (WhatsApp/email)"
-          echo "  2. Settings → Install unknown apps → Allow"
-          echo "  3. Tap APK → Install"
+          echo "Download: GitHub -> Actions -> this run -> Artifacts"
+          echo "Install: Send APK to phone -> Settings -> Unknown apps -> Allow -> Install"
           echo "========================================"
