@@ -3,18 +3,20 @@ package com.jio.antennachatbot
 import android.annotation.SuppressLint
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.DownloadManager
+import android.content.Context
 import android.content.Intent
-import android.net.Uri
 import android.net.ConnectivityManager
 import android.net.NetworkCapabilities
-import android.os.Bundle
+import android.net.Uri
 import android.os.Build
+import android.os.Bundle
+import android.os.Environment
 import android.view.KeyEvent
 import android.view.View
 import android.webkit.*
 import android.widget.*
 import android.graphics.Color
-import android.content.Context
 
 class MainActivity : Activity() {
 
@@ -29,7 +31,6 @@ class MainActivity : Activity() {
     @SuppressLint("SetJavaScriptEnabled")
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
-
         try {
             buildUI()
             loadChatbot()
@@ -63,7 +64,6 @@ class MainActivity : Activity() {
         loadingText.text = "Loading Jio Antenna Chatbot..."
         loadingText.textSize = 16f
         loadingText.setTextColor(Color.parseColor("#555555"))
-
         loadingLayout.addView(loadingSpinner)
         loadingLayout.addView(loadingText)
         root.addView(loadingLayout)
@@ -92,11 +92,9 @@ class MainActivity : Activity() {
         errorTitle.setTextColor(Color.parseColor("#d50000"))
         errorTitle.gravity = android.view.Gravity.CENTER
         val etParams = LinearLayout.LayoutParams(
-            LinearLayout.LayoutParams.MATCH_PARENT,
-            LinearLayout.LayoutParams.WRAP_CONTENT
+            LinearLayout.LayoutParams.MATCH_PARENT, LinearLayout.LayoutParams.WRAP_CONTENT
         )
-        etParams.topMargin = 16
-        etParams.bottomMargin = 12
+        etParams.topMargin = 16; etParams.bottomMargin = 12
         errorTitle.layoutParams = etParams
 
         val errorMsg = TextView(this)
@@ -128,10 +126,6 @@ class MainActivity : Activity() {
         progressBar = ProgressBar(this, null, android.R.attr.progressBarStyleHorizontal)
         progressBar.id = android.R.id.progress
         progressBar.max = 100
-        progressBar.progressDrawable.setColorFilter(
-            Color.parseColor("#d50000"),
-            android.graphics.PorterDuff.Mode.SRC_IN
-        )
         val pbParams = RelativeLayout.LayoutParams(
             RelativeLayout.LayoutParams.MATCH_PARENT, 8
         )
@@ -161,17 +155,45 @@ class MainActivity : Activity() {
             @Suppress("DEPRECATION")
             mixedContentMode         = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             cacheMode                = WebSettings.LOAD_DEFAULT
+            // Allow file access for blob downloads
+            allowFileAccess          = true
+        }
+
+        // ── Download listener — handles CSV downloads via DownloadManager ──
+        webView.setDownloadListener { url, userAgent, contentDisposition, mimeType, _ ->
+            try {
+                val request = DownloadManager.Request(Uri.parse(url)).apply {
+                    setMimeType(mimeType)
+                    val filename = URLUtil.guessFileName(url, contentDisposition, mimeType)
+                    setTitle(filename)
+                    setDescription("Downloading $filename")
+                    addRequestHeader("User-Agent", userAgent)
+                    setNotificationVisibility(
+                        DownloadManager.Request.VISIBILITY_VISIBLE_NOTIFY_COMPLETED
+                    )
+                    setDestinationInExternalPublicDir(
+                        Environment.DIRECTORY_DOWNLOADS, filename
+                    )
+                }
+                val dm = getSystemService(Context.DOWNLOAD_SERVICE) as DownloadManager
+                dm.enqueue(request)
+                Toast.makeText(this, "Downloading CSV to Downloads folder...",
+                    Toast.LENGTH_LONG).show()
+            } catch (e: Exception) {
+                Toast.makeText(this, "Download failed: ${e.message}",
+                    Toast.LENGTH_LONG).show()
+            }
         }
 
         webView.webChromeClient = object : WebChromeClient() {
             override fun onProgressChanged(view: WebView, newProgress: Int) {
                 progressBar.progress = newProgress
                 if (newProgress >= 100) {
-                    progressBar.visibility  = View.GONE
+                    progressBar.visibility   = View.GONE
                     loadingLayout.visibility = View.GONE
                     webView.visibility       = View.VISIBLE
                 } else {
-                    progressBar.visibility  = View.VISIBLE
+                    progressBar.visibility = View.VISIBLE
                 }
             }
         }
@@ -181,14 +203,14 @@ class MainActivity : Activity() {
                 view: WebView, request: WebResourceRequest
             ): Boolean {
                 val url = request.url.toString()
-                // Open external links in browser, keep chatbot in app
-                return if (url.contains("s3.amazonaws.com") || url.contains("lambda-url")) {
+                // Keep S3 and Lambda URLs inside app
+                if (url.contains("amazonaws.com") || url.contains("lambda-url")) {
                     view.loadUrl(url)
-                    true
-                } else {
-                    startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
-                    true
+                    return true
                 }
+                // Open other links in external browser
+                startActivity(Intent(Intent.ACTION_VIEW, Uri.parse(url)))
+                return true
             }
 
             override fun onPageFinished(view: WebView, url: String) {
@@ -211,8 +233,7 @@ class MainActivity : Activity() {
             override fun onReceivedSslError(
                 view: WebView, handler: SslErrorHandler, error: android.net.http.SslError
             ) {
-                // Proceed with SSL — AWS certs are valid
-                handler.proceed()
+                handler.proceed() // AWS certs are valid
             }
         }
 
@@ -240,48 +261,30 @@ class MainActivity : Activity() {
                 @Suppress("DEPRECATION")
                 cm.activeNetworkInfo?.isConnected == true
             }
-        } catch (e: Exception) {
-            true // Assume connected if check fails
-        }
+        } catch (e: Exception) { true }
     }
 
     private fun showFatalError(msg: String) {
         try {
             AlertDialog.Builder(this)
                 .setTitle("Startup Error")
-                .setMessage("The app encountered an error:\n$msg\n\nPlease reinstall the app.")
+                .setMessage("Error: $msg\n\nPlease reinstall the app.")
                 .setPositiveButton("OK") { _, _ -> finish() }
                 .show()
-        } catch (e: Exception) {
-            finish()
-        }
+        } catch (e: Exception) { finish() }
     }
 
     override fun onKeyDown(keyCode: Int, event: KeyEvent?): Boolean {
-        if (keyCode == KeyEvent.KEYCODE_BACK) {
-            if (::webView.isInitialized && webView.canGoBack()) {
-                webView.goBack()
-                return true
-            }
+        if (keyCode == KeyEvent.KEYCODE_BACK && ::webView.isInitialized && webView.canGoBack()) {
+            webView.goBack(); return true
         }
         return super.onKeyDown(keyCode, event)
     }
 
-    override fun onPause()  {
-        super.onPause()
-        if (::webView.isInitialized) webView.onPause()
-    }
-
-    override fun onResume() {
-        super.onResume()
-        if (::webView.isInitialized) webView.onResume()
-    }
-
+    override fun onPause()  { super.onPause();  if (::webView.isInitialized) webView.onPause() }
+    override fun onResume() { super.onResume(); if (::webView.isInitialized) webView.onResume() }
     override fun onDestroy() {
-        if (::webView.isInitialized) {
-            webView.stopLoading()
-            webView.destroy()
-        }
+        if (::webView.isInitialized) { webView.stopLoading(); webView.destroy() }
         super.onDestroy()
     }
 }
