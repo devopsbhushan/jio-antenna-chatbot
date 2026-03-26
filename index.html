@@ -369,6 +369,39 @@
   function isNoAlarm(v){const l=(v||'').trim().toLowerCase();return !l||l==='-'||l==='none'||l==='null'||l==='n/a';}
   function qa(el){document.getElementById('inp').value=el.textContent.trim();send();}
 
+  /* ── Download handler — works in Android WebView + desktop browser ── */
+  function triggerDownload(url){
+    // Method 1: fetch → blob → anchor click (works in WebView, no popup blocker)
+    fetch(url)
+      .then(function(r){
+        if(!r.ok) throw new Error('HTTP '+r.status);
+        return r.blob();
+      })
+      .then(function(blob){
+        var blobUrl = URL.createObjectURL(blob);
+        var a = document.createElement('a');
+        a.href = blobUrl;
+        var fn = 'download.csv';
+        try{
+          var m = url.match(/\/([^/?#]+\.csv)/i);
+          if(m) fn = decodeURIComponent(m[1]);
+        }catch(e){}
+        a.download = fn;
+        a.style.display = 'none';
+        document.body.appendChild(a);
+        a.click();
+        setTimeout(function(){
+          document.body.removeChild(a);
+          URL.revokeObjectURL(blobUrl);
+        }, 1500);
+      })
+      .catch(function(e){
+        // Method 2: fallback — open in same window
+        console.warn('Blob download failed:', e);
+        window.location.href = url;
+      });
+  }
+
   /* ── append ONE element to chat ── */
   function append(html){
     const c=document.getElementById('chat');
@@ -469,7 +502,8 @@
       html+='<div class="dlbanner">'
         +'<div><div class="dltitle">⬇ Download Ready</div>'
         +'<div class="dlmeta">'+Number(count).toLocaleString()+' records · CSV · Link valid 1 hour</div></div>'
-        +'<a href="'+esc(presignedUrl)+'" target="_blank" class="dlbtn">Download CSV</a>'
+        +'<button class="dlbtn" onclick="triggerDownload(\''+presignedUrl.replace(/'/g,"\\'")+'\')">'
+        +'Download CSV</button>'
         +'</div>';
     }
 
