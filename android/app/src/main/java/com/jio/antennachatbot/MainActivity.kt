@@ -147,16 +147,16 @@ class MainActivity : Activity() {
             javaScriptEnabled        = true
             domStorageEnabled        = true
             databaseEnabled          = true
-            loadWithOverviewMode     = true
-            useWideViewPort          = true
-            builtInZoomControls      = false
-            displayZoomControls      = false
-            setSupportZoom(false)
+            loadWithOverviewMode     = false   // don't shrink page to fit screen
+            useWideViewPort          = false   // use actual mobile viewport width
+            builtInZoomControls      = true    // allow pinch zoom
+            displayZoomControls      = false   // hide zoom buttons
+            setSupportZoom(true)
             @Suppress("DEPRECATION")
             mixedContentMode         = WebSettings.MIXED_CONTENT_ALWAYS_ALLOW
             cacheMode                = WebSettings.LOAD_DEFAULT
-            // Allow file access for blob downloads
             allowFileAccess          = true
+            textZoom                 = 100     // don't override font size
         }
 
         // ── Download listener — handles CSV downloads via DownloadManager ──
