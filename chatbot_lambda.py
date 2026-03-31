@@ -115,7 +115,7 @@ COLUMNS = [
 DISPLAY_COLUMNS = [
     "State","SAP ID","Sector Id","Bands",
     "RRH Connect Board ID","RRH Connect Port ID",
-    "SF Antenna Model","LSMR Antenna Type",
+    "SF Antenna Model","LSMR Antenna Type","LSMR Tilt Value",
     "Antenna Classification","RRH Last Updated Time","Alarm details"
 ]
 
