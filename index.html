@@ -363,6 +363,9 @@
   const API='https://x6saqrpdkcr7i4lrnvhwufjnpe0smkqv.lambda-url.ap-south-1.on.aws/';
   const COLS=["State","SAP ID","Sector Id","Bands","RRH Connect Board ID","RRH Connect Port ID","SF Antenna Model","LSMR Antenna Type","LSMR Tilt Value","Antenna Classification","RRH Last Updated Time","Alarm details"];
   let hist=[],busy=false,lastMsg='';
+  // Capture antenna image src at page-load while still in DOM.
+  // clr() can't query it later — hideWelcome() removes the element on mobile.
+  const _imgSrc=(document.querySelector('.timg')||{src:''}).src;
 
   /* ── helpers ── */
   function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');}
@@ -569,9 +572,8 @@
     c.innerHTML='';
     const w=document.createElement('div');
     w.id='welcomeBlock';
-    const timg=document.querySelector('#chat .timg')||{src:''};
     w.innerHTML='<div class="welcome-inner">'
-      +'<div class="welcome-img-col"><img class="timg" src="'+timg.src+'" alt="Jio Antenna Tower"></div>'
+      +'<div class="welcome-img-col"><img class="timg" src="'+_imgSrc+'" alt="Jio Antenna Tower"></div>'
       +'<div class="welcome-text-col">'
       +'<div class="wg">Hi there 👋<br>Where should we start?</div>'
       +'<div class="ws">Search antenna inventory, download reports, check alarms and RET status across Jio circles.</div>'
