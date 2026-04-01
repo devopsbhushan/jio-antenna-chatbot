@@ -672,6 +672,132 @@ def get_blank_ret_records(state_name):
 
 
 # ════════════════════════════════════════════════════════════
+#  TILT VALUE QUERY
+# ════════════════════════════════════════════════════════════
+
+def is_tilt_query(msg):
+    """
+    Detect queries filtering by LSMR Tilt Value.
+    Examples: "tilt > 5 Maharashtra", "antennas with tilt between 2 and 8 in Delhi",
+              "tilt value 3 Goa", "show sites with tilt less than 4 in Gujarat"
+    Excludes explain/why questions.
+    """
+    lower = msg.lower()
+    if re.search(r'\b(why|reason|explain|cause|what is|what are|how|tell me about|describe)\b', lower):
+        return False
+    if not re.search(r'\btilt\b', lower):
+        return False
+    has_number     = bool(re.search(r'\b\d+(\.\d+)?\b', lower))
+    has_comparison = bool(re.search(
+        r'\b(greater|less|more|above|below|between|equal|exactly|over|under|than|from|to|minimum|maximum|min|max|at least|at most)\b',
+        lower
+    ))
+    return has_number or has_comparison
+
+
+def extract_tilt_filter(msg):
+    """
+    Parse tilt condition from message.
+    Returns dict: {"op": "eq"|"gt"|"lt"|"gte"|"lte"|"range", "val": float, "val2": float|None}
+    Returns None if no parseable condition found.
+    """
+    lower = msg.lower()
+
+    # Range: "between X and Y" or "from X to Y"
+    m = re.search(r'(?:between|from)\s+(\d+(?:\.\d+)?)\s+(?:and|to)\s+(\d+(?:\.\d+)?)', lower)
+    if m:
+        return {"op": "range", "val": float(m.group(1)), "val2": float(m.group(2))}
+
+    # >= : "at least N" / "minimum N" / ">= N"
+    m = re.search(r'(?:>=|at\s+least|minimum|min)\s*(\d+(?:\.\d+)?)', lower)
+    if m:
+        return {"op": "gte", "val": float(m.group(1)), "val2": None}
+
+    # <= : "at most N" / "maximum N" / "<= N"
+    m = re.search(r'(?:<=|at\s+most|maximum|max)\s*(\d+(?:\.\d+)?)', lower)
+    if m:
+        return {"op": "lte", "val": float(m.group(1)), "val2": None}
+
+    # > : "greater than N" / "more than N" / "above N" / "over N" / "> N"
+    m = re.search(r'(?:greater\s+than|more\s+than|above|over|>)\s*(\d+(?:\.\d+)?)', lower)
+    if m:
+        return {"op": "gt", "val": float(m.group(1)), "val2": None}
+
+    # < : "less than N" / "below N" / "under N" / "< N"
+    m = re.search(r'(?:less\s+than|below|under|<)\s*(\d+(?:\.\d+)?)', lower)
+    if m:
+        return {"op": "lt", "val": float(m.group(1)), "val2": None}
+
+    # Exact: "tilt value 5" / "tilt 5" / "tilt = 5" / "tilt of 5"
+    m = re.search(r'tilt\s+(?:value\s+|of\s+)?(?:=\s*)?(\d+(?:\.\d+)?)', lower)
+    if m:
+        return {"op": "eq", "val": float(m.group(1)), "val2": None}
+
+    # Last resort: first standalone number in message
+    m = re.search(r'\b(\d+(?:\.\d+)?)\b', lower)
+    if m:
+        return {"op": "eq", "val": float(m.group(1)), "val2": None}
+
+    return None
+
+
+def _tilt_op_desc(tilt_filter):
+    """Human-readable description of a tilt filter for summaries and filenames."""
+    op   = tilt_filter["op"]
+    val  = tilt_filter["val"]
+    val2 = tilt_filter.get("val2")
+    return {
+        "eq":    f"= {val}",
+        "gt":    f"> {val}",
+        "lt":    f"< {val}",
+        "gte":   f">= {val}",
+        "lte":   f"<= {val}",
+        "range": f"between {val} and {val2}",
+    }.get(op, str(val))
+
+
+def _tilt_matches(raw_val, tilt_filter):
+    """Return True if a record's LSMR Tilt Value satisfies the filter."""
+    s = str(raw_val).strip()
+    if not s or s in ("-", "N/A", "null", "None", "nan", ""):
+        return False
+    try:
+        val = float(s)
+    except ValueError:
+        return False
+    op   = tilt_filter["op"]
+    fv   = tilt_filter["val"]
+    fv2  = tilt_filter.get("val2")
+    if op == "eq":    return val == fv
+    if op == "gt":    return val > fv
+    if op == "lt":    return val < fv
+    if op == "gte":   return val >= fv
+    if op == "lte":   return val <= fv
+    if op == "range": return fv <= val <= fv2
+    return False
+
+
+def get_tilt_records(state_name, tilt_filter):
+    """
+    Scan a state's SAP map and return all records matching the tilt filter.
+    Applies 15-day freshness filter before returning.
+    """
+    sap_map = _load_state_sap(state_name)
+    results = []
+    total   = 0
+    for records in sap_map.values():
+        for r in records:
+            total += 1
+            if _tilt_matches(r.get("LSMR Tilt Value", ""), tilt_filter):
+                row = dict(r)
+                row["State"] = state_name
+                results.append(row)
+    print(f"Tilt filter {tilt_filter} on {state_name}: {total} checked, {len(results)} matched")
+    results = apply_15day_filter(results)
+    return results
+
+
+# ════════════════════════════════════════════════════════════
 #  LANGCHAIN SEMANTIC SEARCH + RAG
 # ════════════════════════════════════════════════════════════
 
@@ -937,6 +1063,7 @@ def lambda_handler(event, context):
         jc_query    = (not blank_ret and not alarm_query) and is_jc_data_query(msg) and bool(jc_name)
         state_data  = (not blank_ret and not alarm_query and not jc_query) and is_state_data_query(msg) and bool(state_name)
         greeting    = is_greeting(msg)
+        tilt_query  = (not blank_ret and not alarm_query and not jc_query and not state_data and not sap_id) and is_tilt_query(msg)
         general_q   = (not greeting) and is_general_question(msg)
 
         # ── Greeting / chitchat ────────────────────────────────────────────
@@ -1217,6 +1344,65 @@ def lambda_handler(event, context):
                 "history": history, "download": False,
                 "presigned_url": presigned_url,
                 "filename": f"StateData_{state_name}_15days.csv"
+            })}
+
+
+        # ── Tilt value query ────────────────────────────────────────────────
+        elif tilt_query:
+            if not state_name:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary": (
+                        "Please specify a state for tilt queries, e.g. "
+                        "'Show antennas with tilt > 5 in Maharashtra' or "
+                        "'Tilt between 2 and 8 in Delhi'."
+                    ),
+                    "records": [], "columns": COLUMNS, "retrieved": 0,
+                    "history": history, "download": False
+                })}
+            tilt_filter = extract_tilt_filter(msg)
+            if not tilt_filter:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary": (
+                        "Could not parse a tilt value from your query. "
+                        "Try: 'tilt value 5', 'tilt > 3', 'tilt between 2 and 8', "
+                        "or 'tilt less than 4 in Gujarat'."
+                    ),
+                    "records": [], "columns": COLUMNS, "retrieved": 0,
+                    "history": history, "download": False
+                })}
+            docs = get_tilt_records(state_name, tilt_filter)
+            op_desc = _tilt_op_desc(tilt_filter)
+            if not docs:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary": f"No records found with LSMR Tilt Value {op_desc} in {state_name} (latest 15 days).",
+                    "records": [], "columns": COLUMNS, "retrieved": 0,
+                    "history": history, "download": False
+                })}
+            # ≤500 rows — return inline; >500 rows — generate CSV download
+            if len(docs) <= 500:
+                return {"statusCode": 200, "body": json.dumps({
+                    "summary": f"Found {len(docs):,} antennas with LSMR Tilt Value {op_desc} in {state_name} (latest 15 days).",
+                    "records": docs[:50], "columns": COLUMNS,
+                    "retrieved": len(docs), "history": history, "download": False
+                })}
+            op_safe  = re.sub(r"[^A-Za-z0-9]", "_", op_desc)
+            csv_key  = f"exports/Tilt_{op_safe}_{state_name}_15days.csv"
+            buf = io.StringIO()
+            writer = csv.DictWriter(buf, fieldnames=COLUMNS, extrasaction="ignore")
+            writer.writeheader()
+            for row in docs:
+                writer.writerow({c: row.get(c, "") for c in COLUMNS})
+            s3.put_object(Bucket=BUCKET, Key=csv_key,
+                          Body=buf.getvalue().encode("utf-8"), ContentType="text/csv")
+            presigned_url = s3.generate_presigned_url(
+                "get_object", Params={"Bucket": BUCKET, "Key": csv_key}, ExpiresIn=3600)
+            filename = f"Tilt_{op_safe}_{state_name}_15days.csv"
+            print(f"Tilt CSV: {csv_key}, {len(docs)} rows")
+            return {"statusCode": 200, "body": json.dumps({
+                "summary": f"Found {len(docs):,} antennas with LSMR Tilt Value {op_desc} in {state_name} (latest 15 days). Click to download.",
+                "records": [], "columns": COLUMNS, "retrieved": len(docs),
+                "history": history, "download": False,
+                "presigned_url": presigned_url, "filename": filename
             })}
 
         # ── SAP ID lookup ───────────────────────────────────────────────────
